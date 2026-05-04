@@ -1,0 +1,102 @@
+generator client {
+  provider = "prisma-client-js"
+}
+
+datasource db {
+  provider = "sqlite"
+  url      = "file:../backend/data/dev.db"
+}
+
+model User {
+  id           String     @id
+  phone        String     @unique
+  passwordHash String
+  nickname     String
+  avatarUrl    String
+  bio          String     @default("")
+  status       String     @default("active")
+  createdAt    DateTime   @default(now())
+  updatedAt    DateTime   @updatedAt
+  posts        Post[]
+  comments     Comment[]
+  likes        PostLike[]
+  files        File[]
+  sessions     Session[]
+
+  @@map("users")
+}
+
+model Post {
+  id            String     @id
+  authorId      String
+  title         String
+  content       String
+  coverImageUrl String
+  imageUrlsJson String     @default("[]")
+  merchantName  String     @default("")
+  tagsJson      String     @default("[]")
+  likeCount     Int        @default(0)
+  commentCount  Int        @default(0)
+  status        String     @default("published")
+  createdAt     DateTime   @default(now())
+  updatedAt     DateTime   @updatedAt
+  author        User       @relation(fields: [authorId], references: [id], onDelete: Cascade)
+  comments      Comment[]
+  likes         PostLike[]
+
+  @@index([authorId])
+  @@map("posts")
+}
+
+model Comment {
+  id        String   @id
+  postId    String
+  authorId  String
+  content   String
+  status    String   @default("published")
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
+  post      Post     @relation(fields: [postId], references: [id], onDelete: Cascade)
+  author    User     @relation(fields: [authorId], references: [id], onDelete: Cascade)
+
+  @@index([postId])
+  @@index([authorId])
+  @@map("comments")
+}
+
+model PostLike {
+  id        String   @id
+  postId    String
+  userId    String
+  createdAt DateTime @default(now())
+  post      Post     @relation(fields: [postId], references: [id], onDelete: Cascade)
+  user      User     @relation(fields: [userId], references: [id], onDelete: Cascade)
+
+  @@unique([postId, userId])
+  @@index([userId])
+  @@map("post_likes")
+}
+
+model File {
+  id        String   @id
+  ownerId   String
+  url       String
+  mimeType  String
+  size      Int
+  purpose   String
+  createdAt DateTime @default(now())
+  owner     User     @relation(fields: [ownerId], references: [id], onDelete: Cascade)
+
+  @@index([ownerId])
+  @@map("files")
+}
+
+model Session {
+  token     String   @id
+  userId    String
+  createdAt DateTime @default(now())
+  user      User     @relation(fields: [userId], references: [id], onDelete: Cascade)
+
+  @@index([userId])
+  @@map("sessions")
+}
