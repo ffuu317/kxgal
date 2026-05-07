@@ -67,6 +67,12 @@ function publicUser(user: User | null | undefined) {
     avatarUrl: user.avatarUrl,
     bio: user.bio,
     status: user.status,
+    level: user.level,
+    creditCoin: user.creditCoin,
+    isMerchant: user.isMerchant,
+    merchantStatus: user.merchantStatus,
+    idCardVerified: user.idCardVerified,
+    warningCount: user.warningCount,
     createdAt: user.createdAt,
     updatedAt: user.updatedAt
   };
@@ -124,6 +130,7 @@ function serializePost(post: NonNullable<PostWithAuthor>, likedByMe = false) {
     likeCount: post.likeCount,
     commentCount: post.commentCount,
     status: post.status,
+    aiVerified: post.aiVerified,
     createdAt: post.createdAt,
     updatedAt: post.updatedAt,
     author: publicUser(post.author),
@@ -138,6 +145,9 @@ function serializeComment(comment: CommentWithAuthor) {
     authorId: comment.authorId,
     content: comment.content,
     status: comment.status,
+    aiVerified: comment.aiVerified,
+    consumedCoins: comment.consumedCoins,
+    receiptImageUrl: comment.receiptImageUrl,
     createdAt: comment.createdAt,
     updatedAt: comment.updatedAt,
     author: publicUser(comment.author)
@@ -159,9 +169,84 @@ function findCommentsWithAuthor(postId: string) {
   });
 }
 
+function getLevelByCoins(coins: number): string {
+  if (coins >= 200) return "L100";
+  if (coins >= 100) return "L10";
+  if (coins >= 50) return "L1";
+  return "L0";
+}
+
+function getCommentCost(level: string): number {
+  switch (level) {
+    case "L1": return 10;
+    case "L10": return 5;
+    case "L100": return 0;
+    default: return 0;
+  }
+}
+
+async function updateUserLevel(userId: string, coins: number) {
+  const newLevel = getLevelByCoins(coins);
+  await prisma.user.update({ where: { id: userId }, data: { level: newLevel } });
+  return newLevel;
+}
+
+async function createTransaction(userId: string, type: string, amount: number, reason: string, relatedId?: string) {
+  const user = await prisma.user.findUnique({ where: { id: userId } });
+  if (!user) throw apiError(404, "用户不存在");
+  
+  const balanceBefore = user.creditCoin;
+  const balanceAfter = balanceBefore + amount;
+  
+  await prisma.creditTransaction.create({
+    data: {
+      id: id("tx"),
+      userId,
+      type,
+      amount,
+      reason,
+      relatedId,
+      balanceBefore,
+      balanceAfter
+    }
+  });
+  
+  const newLevel = await updateUserLevel(userId, balanceAfter);
+  
+  await prisma.user.update({
+    where: { id: userId },
+    data: { creditCoin: balanceAfter, level: newLevel }
+  });
+  
+  return { balanceAfter, newLevel };
+}
+
+function simulateAIVerification(content: string): string {
+  const spamKeywords = ["太好了", "非常棒", "超级好吃", "无敌美味", "绝绝子", "YYDS", "强烈推荐", "必点"];
+  const normalKeywords = ["味道一般", "还可以", "价格贵", "服务差", "等了很久", "分量少"];
+  
+  let spamScore = 0;
+  let normalScore = 0;
+  
+  spamKeywords.forEach(keyword => {
+    if (content.includes(keyword)) spamScore++;
+  });
+  
+  normalKeywords.forEach(keyword => {
+    if (content.includes(keyword)) normalScore++;
+  });
+  
+  if (spamScore >= 3) return "fake";
+  if (spamScore >= 2 && normalScore === 0) return "fake";
+  if (content.length < 10) return "suspicious";
+  if (content.length > 500) return "suspicious";
+  return "verified";
+}
+
 async function ensureSeedData() {
   const existingUsers = await prisma.user.count();
   if (existingUsers > 0) return;
+  
   const user = await prisma.user.create({
     data: {
       id: "u_demo",
@@ -169,9 +254,27 @@ async function ensureSeedData() {
       passwordHash: hashPassword("123456"),
       nickname: "食证体验官",
       avatarUrl: defaultAvatar,
-      bio: "用真实图片和评论记录身边餐饮体验。"
+      bio: "用真实图片和评论记录身边餐饮体验。",
+      level: "L10",
+      creditCoin: 150
     }
   });
+  
+  const merchant = await prisma.merchant.create({
+    data: {
+      id: "m_demo",
+      userId: user.id,
+      businessName: "老巷牛肉面",
+      businessAddress: "北京市朝阳区某某街道123号",
+      status: "approved"
+    }
+  });
+  
+  await prisma.user.update({
+    where: { id: user.id },
+    data: { isMerchant: true, merchantStatus: "approved" }
+  });
+  
   const post = await prisma.post.create({
     data: {
       id: "p_demo",
@@ -183,19 +286,49 @@ async function ensureSeedData() {
       merchantName: "老巷牛肉面",
       tagsJson: JSON.stringify(["牛肉面", "午餐", "实拍"]),
       likeCount: 1,
-      commentCount: 1
+      commentCount: 1,
+      aiVerified: "verified"
     }
   });
+  
   await prisma.comment.create({
     data: {
       id: "c_demo",
       postId: post.id,
       authorId: user.id,
-      content: "默认账号：13800000000 / 123456，也可以直接注册新账号。"
+      content: "默认账号：13800000000 / 123456，也可以直接注册新账号。",
+      aiVerified: "verified",
+      consumedCoins: 5
     }
   });
+  
   await prisma.postLike.create({
     data: { id: "l_demo", postId: post.id, userId: user.id }
+  });
+  
+  await prisma.creditTransaction.create({
+    data: {
+      id: "tx_demo",
+      userId: user.id,
+      type: "login",
+      amount: 5,
+      reason: "每日登录奖励",
+      balanceBefore: 145,
+      balanceAfter: 150
+    }
+  });
+  
+  await prisma.bounty.create({
+    data: {
+      id: "b_demo",
+      publisherId: user.id,
+      merchantId: merchant.id,
+      merchantName: "老巷牛肉面",
+      merchantAddress: "北京市朝阳区某某街道123号",
+      description: "验证店内招牌菜实物图是否与菜单一致",
+      rewardCoins: 50,
+      deadline: new Date(Date.now() + 7 * 24 * 60 * 60 * 1000)
+    }
   });
 }
 
@@ -221,19 +354,32 @@ api.post(
     const phone = requireString(req.body, "phone", 6);
     const password = requireString(req.body, "password", 6);
     const nickname = requireString(req.body, "nickname");
+    const fingerprintHash = typeof req.body.fingerprintHash === "string" ? req.body.fingerprintHash : "";
+    
     const existing = await prisma.user.findUnique({ where: { phone } });
     if (existing) throw apiError(409, "手机号已注册", "PHONE_EXISTS");
+    
+    if (fingerprintHash) {
+      const fingerprintExists = await prisma.user.findFirst({ where: { fingerprintHash } });
+      if (fingerprintExists) throw apiError(409, "该指纹已绑定其他账号", "FINGERPRINT_EXISTS");
+    }
+    
     const user = await prisma.user.create({
       data: {
         id: id("u"),
         phone,
         passwordHash: hashPassword(password),
         nickname,
-        avatarUrl: defaultAvatar
+        avatarUrl: defaultAvatar,
+        fingerprintHash: fingerprintHash || null,
+        level: "L0",
+        creditCoin: 0
       }
     });
+    
     const token = id("token");
     await prisma.session.create({ data: { token, userId: user.id } });
+    
     res.status(201).json({ token, user: publicUser(user) });
   })
 );
@@ -243,13 +389,32 @@ api.post(
   asyncRoute(async (req, res) => {
     const phone = requireString(req.body, "phone", 6);
     const password = requireString(req.body, "password");
+    
     const user = await prisma.user.findUnique({ where: { phone } });
     if (!user || !verifyPassword(password, user.passwordHash)) {
       throw apiError(401, "手机号或密码错误", "BAD_CREDENTIALS");
     }
+    
     const token = id("token");
     await prisma.session.create({ data: { token, userId: user.id } });
-    res.json({ token, user: publicUser(user) });
+    
+    await prisma.user.update({
+      where: { id: user.id },
+      data: { lastLoginAt: new Date() }
+    });
+    
+    const today = new Date().toDateString();
+    const lastRewardDate = await prisma.creditTransaction.findFirst({
+      where: { userId: user.id, type: "login", createdAt: { gte: new Date(today) } }
+    });
+    
+    if (!lastRewardDate) {
+      await createTransaction(user.id, "login", 5, "每日登录奖励");
+      const updatedUser = await prisma.user.findUnique({ where: { id: user.id } });
+      res.json({ token, user: publicUser(updatedUser), loginReward: true });
+    } else {
+      res.json({ token, user: publicUser(user), loginReward: false });
+    }
   })
 );
 
@@ -279,7 +444,8 @@ api.patch(
       data: {
         nickname: typeof req.body.nickname === "string" && req.body.nickname.trim() ? req.body.nickname.trim() : user.nickname,
         avatarUrl: typeof req.body.avatarUrl === "string" ? req.body.avatarUrl : user.avatarUrl,
-        bio: typeof req.body.bio === "string" ? req.body.bio.trim() : user.bio
+        bio: typeof req.body.bio === "string" ? req.body.bio.trim() : user.bio,
+        idCardVerified: typeof req.body.idCardVerified === "boolean" ? req.body.idCardVerified : user.idCardVerified
       }
     });
     res.json({ user: publicUser(nextUser) });
@@ -287,11 +453,16 @@ api.patch(
 );
 
 api.post(
-  ["/files/avatar", "/files/post-image"],
+  ["/files/avatar", "/files/post-image", "/files/receipt", "/files/kitchen"],
   asyncRoute(async (req, res) => {
     const user = await requireUser(req);
     const dataUrl = requireString(req.body, "dataUrl", 12);
     if (!dataUrl.startsWith("data:image/")) throw apiError(400, "只支持图片 data URL", "BAD_FILE");
+    
+    const purpose = req.path.endsWith("avatar") ? "avatar" : 
+                    req.path.endsWith("receipt") ? "receipt" :
+                    req.path.endsWith("kitchen") ? "kitchen" : "post-image";
+    
     const file = await prisma.file.create({
       data: {
         id: id("f"),
@@ -299,7 +470,7 @@ api.post(
         url: dataUrl,
         mimeType: dataUrl.slice(5, dataUrl.indexOf(";")) || "image/*",
         size: Math.round((dataUrl.length * 3) / 4),
-        purpose: req.path.endsWith("avatar") ? "avatar" : "post-image"
+        purpose
       }
     });
     res.status(201).json({ file });
@@ -307,10 +478,67 @@ api.post(
 );
 
 api.get(
-  ["/posts", "/posts/search"],
+  "/users/me/transactions",
+  asyncRoute(async (req, res) => {
+    const user = await requireUser(req);
+    const transactions = await prisma.creditTransaction.findMany({
+      where: { userId: user.id },
+      orderBy: { createdAt: "desc" },
+      take: 50
+    });
+    res.json({ transactions });
+  })
+);
+
+api.post(
+  "/users/me/merchant-apply",
+  asyncRoute(async (req, res) => {
+    const user = await requireUser(req);
+    
+    if (user.isMerchant) throw apiError(400, "您已经是商家用户", "ALREADY_MERCHANT");
+    
+    const businessName = requireString(req.body, "businessName");
+    const businessAddress = requireString(req.body, "businessAddress");
+    const businessLicense = typeof req.body.businessLicense === "string" ? req.body.businessLicense : "";
+    const licenseImageUrl = typeof req.body.licenseImageUrl === "string" ? req.body.licenseImageUrl : "";
+    
+    await prisma.merchant.create({
+      data: {
+        id: id("m"),
+        userId: user.id,
+        businessName,
+        businessAddress,
+        businessLicense,
+        licenseImageUrl,
+        status: "pending"
+      }
+    });
+    
+    await prisma.user.update({
+      where: { id: user.id },
+      data: { isMerchant: true, merchantStatus: "pending" }
+    });
+    
+    const updatedUser = await prisma.user.findUnique({ where: { id: user.id } });
+    res.json({ user: publicUser(updatedUser), message: "商家认证申请已提交，等待审核" });
+  })
+);
+
+api.get(
+  "/users/me/merchant",
+  asyncRoute(async (req, res) => {
+    const user = await requireUser(req);
+    const merchant = await prisma.merchant.findUnique({ where: { userId: user.id } });
+    res.json({ merchant });
+  })
+);
+
+api.get(
+  "/posts",
   asyncRoute(async (req, res) => {
     const viewer = await currentUser(req);
     const q = typeof req.query.q === "string" ? req.query.q.trim() : "";
+    
     const posts = await prisma.post.findMany({
       where: {
         status: "published",
@@ -328,6 +556,7 @@ api.get(
       include: { author: true },
       orderBy: { createdAt: "desc" }
     });
+    
     const likedIds = viewer
       ? new Set(
           (
@@ -338,6 +567,7 @@ api.get(
           ).map((like) => like.postId)
         )
       : new Set<string>();
+    
     res.json({ posts: posts.map((post) => serializePost(post, likedIds.has(post.id))) });
   })
 );
@@ -349,8 +579,12 @@ api.post(
     const title = requireString(req.body, "title");
     const content = requireString(req.body, "content");
     const imageUrls = Array.isArray(req.body.imageUrls) ? req.body.imageUrls.map(String).filter(Boolean) : [];
+    
     if (imageUrls.length === 0) throw apiError(400, "至少上传一张图片", "IMAGE_REQUIRED");
+    
     const tags = Array.isArray(req.body.tags) ? req.body.tags.map(String).map((tag: string) => tag.trim()).filter(Boolean) : [];
+    const aiVerified = simulateAIVerification(content);
+    
     const post = await prisma.post.create({
       data: {
         id: id("p"),
@@ -360,10 +594,16 @@ api.post(
         coverImageUrl: imageUrls[0],
         imageUrlsJson: JSON.stringify(imageUrls),
         merchantName: typeof req.body.merchantName === "string" ? req.body.merchantName.trim() : "",
-        tagsJson: JSON.stringify(tags)
+        tagsJson: JSON.stringify(tags),
+        aiVerified
       },
       include: { author: true }
     });
+    
+    if (aiVerified === "verified" && content.length > 50) {
+      await createTransaction(user.id, "post_reward", 10, "优质帖子奖励", post.id);
+    }
+    
     res.status(201).json({ post: serializePost(post) });
   })
 );
@@ -374,6 +614,7 @@ api.get(
     const viewer = await currentUser(req);
     const post = await findPostWithAuthor(routeParam(req, "id"));
     if (!post) throw apiError(404, "资源不存在", "NOT_FOUND");
+    
     const likedByMe = viewer ? Boolean(await prisma.postLike.findUnique({ where: { postId_userId: { postId: post.id, userId: viewer.id } } })) : false;
     res.json({ post: serializePost(post, likedByMe) });
   })
@@ -386,6 +627,7 @@ api.patch(
     const post = await prisma.post.findFirst({ where: { id: routeParam(req, "id"), status: "published" } });
     if (!post) throw apiError(404, "资源不存在", "NOT_FOUND");
     if (post.authorId !== user.id) throw apiError(403, "只能编辑自己的帖子", "FORBIDDEN");
+    
     const nextPost = await prisma.post.update({
       where: { id: post.id },
       data: {
@@ -407,6 +649,7 @@ api.delete(
     const post = await prisma.post.findFirst({ where: { id: routeParam(req, "id"), status: "published" } });
     if (!post) throw apiError(404, "资源不存在", "NOT_FOUND");
     if (post.authorId !== user.id) throw apiError(403, "只能删除自己的帖子", "FORBIDDEN");
+    
     await prisma.post.update({ where: { id: post.id }, data: { status: "deleted" } });
     res.json({ ok: true });
   })
@@ -426,20 +669,69 @@ api.post(
     const user = await requireUser(req);
     const post = await prisma.post.findFirst({ where: { id: routeParam(req, "id"), status: "published" } });
     if (!post) throw apiError(404, "资源不存在", "NOT_FOUND");
+    
+    if (user.level === "L0") throw apiError(403, "L0用户不可发表评论，请先获取信用币升级", "LEVEL_LOW");
+    
+    const content = requireString(req.body, "content");
+    const receiptImageUrl = typeof req.body.receiptImageUrl === "string" ? req.body.receiptImageUrl : undefined;
+    
+    if (user.level === "L1" && !receiptImageUrl) {
+      throw apiError(400, "L1用户发表评论必须附带消费截图", "RECEIPT_REQUIRED");
+    }
+    
+    const cost = getCommentCost(user.level);
+    if (cost > 0 && user.creditCoin < cost) {
+      throw apiError(400, "信用币不足", "INSUFFICIENT_COINS");
+    }
+    
+    const aiVerified = simulateAIVerification(content);
+    
     const comment = await prisma.$transaction(async (tx) => {
+      if (cost > 0) {
+        await tx.user.update({ where: { id: user.id }, data: { creditCoin: { decrement: cost } } });
+        await tx.creditTransaction.create({
+          data: {
+            id: id("tx"),
+            userId: user.id,
+            type: "comment_cost",
+            amount: -cost,
+            reason: "发表评论消耗",
+            relatedId: post.id,
+            balanceBefore: user.creditCoin,
+            balanceAfter: user.creditCoin - cost
+          }
+        });
+      }
+      
       const created = await tx.comment.create({
         data: {
           id: id("c"),
           postId: post.id,
           authorId: user.id,
-          content: requireString(req.body, "content")
+          content,
+          receiptImageUrl,
+          consumedCoins: cost,
+          aiVerified
         },
         include: { author: true }
       });
+      
       await tx.post.update({ where: { id: post.id }, data: { commentCount: { increment: 1 } } });
+      
+      if (aiVerified === "fake") {
+        await tx.user.update({ where: { id: user.id }, data: { warningCount: { increment: 1 } } });
+        await createTransaction(user.id, "penalty", -20, "AI检测为水军发言", created.id);
+        
+        const updatedUser = await tx.user.findUnique({ where: { id: user.id } });
+        if (updatedUser!.warningCount >= 4) {
+          await tx.user.update({ where: { id: user.id }, data: { status: "banned" } });
+        }
+      }
+      
       return created;
     });
-    res.status(201).json({ comment: serializeComment(comment) });
+    
+    res.status(201).json({ comment: serializeComment(comment), cost });
   })
 );
 
@@ -450,10 +742,12 @@ api.delete(
     const comment = await prisma.comment.findFirst({ where: { id: routeParam(req, "id"), status: "published" } });
     if (!comment) throw apiError(404, "资源不存在", "NOT_FOUND");
     if (comment.authorId !== user.id) throw apiError(403, "只能删除自己的评论", "FORBIDDEN");
+    
     await prisma.$transaction([
       prisma.comment.update({ where: { id: comment.id }, data: { status: "deleted" } }),
       prisma.post.update({ where: { id: comment.postId }, data: { commentCount: { decrement: 1 } } })
     ]);
+    
     res.json({ ok: true });
   })
 );
@@ -464,6 +758,7 @@ api.post(
     const user = await requireUser(req);
     const post = await findPostWithAuthor(routeParam(req, "id"));
     if (!post) throw apiError(404, "资源不存在", "NOT_FOUND");
+    
     const exists = await prisma.postLike.findUnique({ where: { postId_userId: { postId: post.id, userId: user.id } } });
     if (!exists) {
       await prisma.$transaction([
@@ -471,6 +766,7 @@ api.post(
         prisma.post.update({ where: { id: post.id }, data: { likeCount: { increment: 1 } } })
       ]);
     }
+    
     const nextPost = await findPostWithAuthor(post.id);
     res.json({ post: serializePost(nextPost!, true) });
   })
@@ -482,10 +778,12 @@ api.delete(
     const user = await requireUser(req);
     const post = await findPostWithAuthor(routeParam(req, "id"));
     if (!post) throw apiError(404, "资源不存在", "NOT_FOUND");
+    
     const deleted = await prisma.postLike.deleteMany({ where: { postId: post.id, userId: user.id } });
     if (deleted.count > 0) {
       await prisma.post.update({ where: { id: post.id }, data: { likeCount: { decrement: 1 } } });
     }
+    
     const nextPost = await findPostWithAuthor(post.id);
     res.json({ post: serializePost(nextPost!, false) });
   })
@@ -514,6 +812,184 @@ api.get(
       orderBy: { createdAt: "desc" }
     });
     res.json({ comments: comments.map(serializeComment) });
+  })
+);
+
+api.get(
+  "/bounties",
+  asyncRoute(async (req, res) => {
+    const viewer = await currentUser(req);
+    const bounties = await prisma.bounty.findMany({
+      where: { status: "active" },
+      include: { publisher: true, acceptor: true },
+      orderBy: { createdAt: "desc" }
+    });
+    
+    res.json({ bounties });
+  })
+);
+
+api.post(
+  "/bounties",
+  asyncRoute(async (req, res) => {
+    const user = await requireUser(req);
+    
+    const merchantName = requireString(req.body, "merchantName");
+    const merchantAddress = requireString(req.body, "merchantAddress");
+    const description = requireString(req.body, "description");
+    const rewardCoins = typeof req.body.rewardCoins === "number" ? req.body.rewardCoins : 50;
+    const deadlineDays = typeof req.body.deadlineDays === "number" ? req.body.deadlineDays : 7;
+    
+    if (user.creditCoin < rewardCoins) {
+      throw apiError(400, "信用币不足，无法发布悬赏", "INSUFFICIENT_COINS");
+    }
+    
+    const deadline = new Date(Date.now() + deadlineDays * 24 * 60 * 60 * 1000);
+    
+    await prisma.$transaction(async (tx) => {
+      await tx.user.update({ where: { id: user.id }, data: { creditCoin: { decrement: rewardCoins } } });
+      await tx.creditTransaction.create({
+        data: {
+          id: id("tx"),
+          userId: user.id,
+          type: "bounty_publish",
+          amount: -rewardCoins,
+          reason: "发布悬赏消耗",
+          balanceBefore: user.creditCoin,
+          balanceAfter: user.creditCoin - rewardCoins
+        }
+      });
+    });
+    
+    const bounty = await prisma.bounty.create({
+      data: {
+        id: id("b"),
+        publisherId: user.id,
+        merchantName,
+        merchantAddress,
+        description,
+        rewardCoins,
+        deadline
+      },
+      include: { publisher: true }
+    });
+    
+    res.status(201).json({ bounty });
+  })
+);
+
+api.post(
+  "/bounties/:id/accept",
+  asyncRoute(async (req, res) => {
+    const user = await requireUser(req);
+    const bounty = await prisma.bounty.findFirst({ where: { id: routeParam(req, "id"), status: "active" } });
+    
+    if (!bounty) throw apiError(404, "悬赏任务不存在或已结束", "NOT_FOUND");
+    if (bounty.acceptorId) throw apiError(400, "该任务已被接取", "ALREADY_ACCEPTED");
+    if (bounty.publisherId === user.id) throw apiError(400, "不能接取自己发布的任务", "SELF_ACCEPT");
+    
+    const updatedBounty = await prisma.bounty.update({
+      where: { id: bounty.id },
+      data: { acceptorId: user.id, status: "accepted" },
+      include: { publisher: true, acceptor: true }
+    });
+    
+    res.json({ bounty: updatedBounty });
+  })
+);
+
+api.post(
+  "/bounties/:id/submit",
+  asyncRoute(async (req, res) => {
+    const user = await requireUser(req);
+    const bounty = await prisma.bounty.findFirst({ where: { id: routeParam(req, "id") } });
+    
+    if (!bounty) throw apiError(404, "悬赏任务不存在", "NOT_FOUND");
+    if (bounty.acceptorId !== user.id) throw apiError(403, "只能提交自己接取的任务", "NOT_ACCEPTOR");
+    if (bounty.status !== "accepted") throw apiError(400, "任务状态不允许提交", "INVALID_STATUS");
+    
+    const imageUrls = Array.isArray(req.body.imageUrls) ? req.body.imageUrls.map(String).filter(Boolean) : [];
+    if (imageUrls.length === 0) throw apiError(400, "至少上传一张图片", "IMAGE_REQUIRED");
+    
+    const aiVerified = Math.random() > 0.15 ? "verified" : "suspicious";
+    
+    const result = await prisma.$transaction(async (tx) => {
+      const updatedBounty = await tx.bounty.update({
+        where: { id: bounty.id },
+        data: {
+          status: aiVerified === "verified" ? "completed" : "failed",
+          aiVerified,
+          imageUrlsJson: JSON.stringify(imageUrls)
+        }
+      });
+      
+      if (aiVerified === "verified") {
+        await createTransaction(user.id, "bounty_reward", bounty.rewardCoins, "完成悬赏任务奖励", bounty.id);
+        return { bounty: updatedBounty, success: true, reward: bounty.rewardCoins };
+      } else {
+        await createTransaction(user.id, "bounty_refund", bounty.rewardCoins, "悬赏任务失败退款", bounty.id);
+        return { bounty: updatedBounty, success: false, reward: 0 };
+      }
+    });
+    
+    res.json(result);
+  })
+);
+
+api.post(
+  "/merchant/kitchen-upload",
+  asyncRoute(async (req, res) => {
+    const user = await requireUser(req);
+    
+    if (!user.isMerchant) throw apiError(403, "只有商家用户可以上传后厨图片", "NOT_MERCHANT");
+    
+    const imageUrls = Array.isArray(req.body.imageUrls) ? req.body.imageUrls.map(String).filter(Boolean) : [];
+    if (imageUrls.length === 0) throw apiError(400, "至少上传一张图片", "IMAGE_REQUIRED");
+    
+    const now = new Date();
+    const startOfMonth = new Date(now.getFullYear(), now.getMonth(), 1);
+    const endOfMonth = new Date(now.getFullYear(), now.getMonth() + 1, 0);
+    
+    const existingUpload = await prisma.creditTransaction.findFirst({
+      where: {
+        userId: user.id,
+        type: "kitchen_reward",
+        createdAt: { gte: startOfMonth, lte: endOfMonth }
+      }
+    });
+    
+    if (existingUpload) throw apiError(400, "本月已上传过后厨图片", "ALREADY_UPLOADED");
+    
+    const aiVerified = Math.random() > 0.1 ? "verified" : "suspicious";
+    
+    if (aiVerified === "verified") {
+      await createTransaction(user.id, "kitchen_reward", 50, "后厨图片上传奖励");
+    }
+    
+    res.json({ success: aiVerified === "verified", message: aiVerified === "verified" ? "上传成功，奖励50信用币" : "图片检测未通过" });
+  })
+);
+
+api.get(
+  "/merchants",
+  asyncRoute(async (req, res) => {
+    const merchants = await prisma.merchant.findMany({
+      where: { status: "approved" },
+      include: { user: true }
+    });
+    res.json({ merchants });
+  })
+);
+
+api.get(
+  "/merchants/:id/bounties",
+  asyncRoute(async (req, res) => {
+    const bounties = await prisma.bounty.findMany({
+      where: { merchantId: routeParam(req, "id") },
+      include: { publisher: true, acceptor: true },
+      orderBy: { createdAt: "desc" }
+    });
+    res.json({ bounties });
   })
 );
 

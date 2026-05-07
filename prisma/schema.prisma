@@ -8,20 +8,32 @@ datasource db {
 }
 
 model User {
-  id           String     @id
-  phone        String     @unique
-  passwordHash String
-  nickname     String
-  avatarUrl    String
-  bio          String     @default("")
-  status       String     @default("active")
-  createdAt    DateTime   @default(now())
-  updatedAt    DateTime   @updatedAt
-  posts        Post[]
-  comments     Comment[]
-  likes        PostLike[]
-  files        File[]
-  sessions     Session[]
+  id               String               @id
+  phone            String               @unique
+  passwordHash     String
+  nickname         String
+  avatarUrl        String
+  bio              String               @default("")
+  status           String               @default("active")
+  level            String               @default("L0")
+  creditCoin       Int                  @default(0)
+  warningCount     Int                  @default(0)
+  isMerchant       Boolean              @default(false)
+  merchantStatus   String               @default("pending")
+  idCardVerified   Boolean              @default(false)
+  fingerprintHash  String?
+  lastLoginAt      DateTime?
+  createdAt        DateTime             @default(now())
+  updatedAt        DateTime             @updatedAt
+  posts            Post[]
+  comments         Comment[]
+  likes            PostLike[]
+  files            File[]
+  sessions         Session[]
+  transactions     CreditTransaction[]
+  bountyPosts      Bounty[]             @relation("BountyPublisher")
+  bountyAccepts    Bounty[]             @relation("BountyAcceptor")
+  merchant         Merchant?
 
   @@map("users")
 }
@@ -38,6 +50,7 @@ model Post {
   likeCount     Int        @default(0)
   commentCount  Int        @default(0)
   status        String     @default("published")
+  aiVerified    String     @default("pending")
   createdAt     DateTime   @default(now())
   updatedAt     DateTime   @updatedAt
   author        User       @relation(fields: [authorId], references: [id], onDelete: Cascade)
@@ -49,15 +62,18 @@ model Post {
 }
 
 model Comment {
-  id        String   @id
-  postId    String
-  authorId  String
-  content   String
-  status    String   @default("published")
-  createdAt DateTime @default(now())
-  updatedAt DateTime @updatedAt
-  post      Post     @relation(fields: [postId], references: [id], onDelete: Cascade)
-  author    User     @relation(fields: [authorId], references: [id], onDelete: Cascade)
+  id             String   @id
+  postId         String
+  authorId       String
+  content        String
+  status         String   @default("published")
+  aiVerified     String   @default("pending")
+  consumedCoins  Int      @default(0)
+  receiptImageUrl String?
+  createdAt      DateTime @default(now())
+  updatedAt      DateTime @updatedAt
+  post           Post     @relation(fields: [postId], references: [id], onDelete: Cascade)
+  author         User     @relation(fields: [authorId], references: [id], onDelete: Cascade)
 
   @@index([postId])
   @@index([authorId])
@@ -99,4 +115,61 @@ model Session {
 
   @@index([userId])
   @@map("sessions")
+}
+
+model CreditTransaction {
+  id              String   @id
+  userId          String
+  type            String
+  amount          Int
+  reason          String
+  relatedId       String?
+  balanceBefore   Int
+  balanceAfter    Int
+  createdAt       DateTime @default(now())
+  user            User     @relation(fields: [userId], references: [id], onDelete: Cascade)
+
+  @@index([userId])
+  @@map("credit_transactions")
+}
+
+model Merchant {
+  id              String   @id
+  userId          String   @unique
+  businessName    String
+  businessAddress String
+  businessLicense String?
+  licenseImageUrl String?
+  status          String   @default("pending")
+  createdAt       DateTime @default(now())
+  updatedAt       DateTime @updatedAt
+  user            User     @relation(fields: [userId], references: [id], onDelete: Cascade)
+  bounties        Bounty[]
+
+  @@map("merchants")
+}
+
+model Bounty {
+  id              String   @id
+  publisherId     String
+  acceptorId      String?
+  merchantId      String?
+  merchantName    String
+  merchantAddress String
+  description     String
+  imageUrlsJson   String   @default("[]")
+  rewardCoins     Int      @default(50)
+  status          String   @default("active")
+  aiVerified      String   @default("pending")
+  deadline        DateTime
+  createdAt       DateTime @default(now())
+  updatedAt       DateTime @updatedAt
+  publisher       User     @relation("BountyPublisher", fields: [publisherId], references: [id], onDelete: Cascade)
+  acceptor        User?    @relation("BountyAcceptor", fields: [acceptorId], references: [id], onDelete: SetNull)
+  merchant        Merchant? @relation(fields: [merchantId], references: [id], onDelete: SetNull)
+
+  @@index([publisherId])
+  @@index([acceptorId])
+  @@index([merchantId])
+  @@map("bounties")
 }
