@@ -1212,7 +1212,7 @@ function MerchantApplyView({
   onGo
 }: {
   onApply: (event: FormEvent<HTMLFormElement>) => void;
-  onGo: (View) => void;
+  onGo: (view: View) => void;
 }) {
   return (
     <section className="panel">

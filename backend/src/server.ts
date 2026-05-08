@@ -1016,7 +1016,7 @@ app.use((error: ApiError, _req: Request, res: Response, _next: NextFunction) => 
 ensureSeedData()
   .then(() => {
     app.listen(port, host, () => {
-      console.log(`Eattruth API is running at http://${host}:${port}`);
+      console.log(`Eattruth API is running at http://${host === "0.0.0.0" ? "localhost" : host}:${port}`);
     });
   })
   .catch((error) => {
