@@ -150,6 +150,15 @@ function App() {
     setBounties(data.bounties);
   }
 
+  async function loadMyBounties() {
+    try {
+      const data = await api<{ bounties: Bounty[] }>("/users/me/bounties");
+      setBounties(data.bounties);
+    } catch (error) {
+      console.error("Failed to load my bounties:", error);
+    }
+  }
+
   async function loadTransactions() {
     const data = await api<{ transactions: Transaction[] }>("/users/me/transactions");
     setTransactions(data.transactions);
@@ -166,11 +175,13 @@ function App() {
   }
 
   async function openBounty(id: string) {
-    const data = await api<{ bounties: Bounty[] }>("/bounties");
-    const bounty = data.bounties.find((b) => b.id === id);
-    if (bounty) {
-      setSelectedBounty(bounty);
+    try {
+      const data = await api<{ bounty: Bounty }>(`/bounties/${id}`);
+      setSelectedBounty(data.bounty);
       setView("bounty-detail");
+      await loadMyBounties();
+    } catch (error) {
+      flash("无法加载悬赏任务详情");
     }
   }
 
@@ -366,8 +377,8 @@ function App() {
     if (!user) return setView("login");
     try {
       await api(`/bounties/${bountyId}/accept`, { method: "POST", body: "{}" });
-      await loadBounties();
-      flash("已接取任务");
+      await loadMyBounties();
+      flash("已接取任务，请到详情页上传图片完成悬赏");
     } catch (error) {
       flash((error as Error).message);
     }
@@ -386,9 +397,8 @@ function App() {
         body: JSON.stringify({ imageUrls: [imageUrl] })
       });
       setImageDataUrl("");
-      await loadBounties();
-      setView("bounty");
-      flash(data.success ? `任务完成，获得${data.reward}信用币` : "图片检测未通过");
+      await loadMyBounties();
+      flash(data.success ? `任务完成，获得${data.reward}信用币` : "图片检测未通过，任务失败");
     } catch (error) {
       flash((error as Error).message);
     }
@@ -456,6 +466,12 @@ function App() {
     }
   }, [view, user]);
 
+  useEffect(() => {
+    if (view === "mine" && token) {
+      loadMyBounties().catch(() => {});
+    }
+  }, [view, token]);
+
   return (
     <main className="phone">
       {message ? <div className="toast">{message}</div> : null}
@@ -498,8 +514,10 @@ function App() {
         <MineView
           user={user}
           posts={myPosts}
+          myBounties={myBounties}
           onGo={setView}
           onOpenPost={openPost}
+          onOpenBounty={openBounty}
           onAvatar={handleAvatar}
           onProfile={handleProfile}
           onLogout={logout}
@@ -790,16 +808,20 @@ function PublishView({
 function MineView({
   user,
   posts,
+  myBounties,
   onGo,
   onOpenPost,
+  onOpenBounty,
   onAvatar,
   onProfile,
   onLogout
 }: {
   user: User | null;
   posts: Post[];
+  myBounties: Bounty[];
   onGo: (view: View) => void;
   onOpenPost: (id: string) => void;
+  onOpenBounty: (id: string) => void;
   onAvatar: (file: File | undefined) => void;
   onProfile: (event: FormEvent<HTMLFormElement>) => void;
   onLogout: () => void;
@@ -858,6 +880,37 @@ function MineView({
         <button onClick={() => onGo(user.isMerchant ? "merchant" : "merchant-apply")}>
           {user.isMerchant ? "商家中心" : "申请商家认证"}
         </button>
+      </section>
+      
+      <section>
+        <h2>我的悬赏任务</h2>
+        <div className="bounty-list">
+          {myBounties.length ? (
+            myBounties.map((bounty) => (
+              <div className="bounty-card" key={bounty.id} onClick={() => onOpenBounty(bounty.id)}>
+                <div className="bounty-header">
+                  <div className="bounty-merchant">
+                    <h3>{bounty.merchantName}</h3>
+                    <p>{bounty.merchantAddress}</p>
+                  </div>
+                  <div className="bounty-reward">
+                    <span className="reward-amount">{bounty.rewardCoins}</span>
+                    <span className="reward-label">信用币</span>
+                  </div>
+                </div>
+                <p className="bounty-desc">{bounty.description}</p>
+                <div className="bounty-footer">
+                  <span className={`status-tag ${bounty.status}`}>
+                    {bounty.status === "active" ? "待接取" : bounty.status === "accepted" ? "进行中" : bounty.status === "completed" ? "已完成" : "已失败"}
+                  </span>
+                  <span>{bounty.publisherId === user.id ? "我发布的" : "我接取的"}</span>
+                </div>
+              </div>
+            ))
+          ) : (
+            <Empty text="还没有悬赏任务" />
+          )}
+        </div>
       </section>
       
       <section>
@@ -923,7 +976,7 @@ function BountyView({
                 <span>{bounty.status === "active" ? "可接取" : bounty.status === "accepted" ? "进行中" : "已完成"}</span>
                 <span>发布于 {new Date(bounty.createdAt).toLocaleDateString()}</span>
               </div>
-              {user && bounty.status === "active" && bounty.publisherId !== user.id && (
+              {user && bounty.status === "active" && (
                 <button className="accept-btn" onClick={(e) => { e.stopPropagation(); onAcceptBounty(bounty.id); }}>
                   接取任务
                 </button>
@@ -1020,6 +1073,17 @@ function BountyDetailView({
           <h2>任务描述</h2>
           <p>{bounty.description}</p>
         </div>
+        
+        {bounty.status === "accepted" && (
+          <div className="bounty-info deadline">
+            <h2>截止时间</h2>
+            <p className="deadline-text">
+              {new Date(bounty.deadline) > new Date() 
+                ? `剩余 ${Math.ceil((new Date(bounty.deadline).getTime() - Date.now()) / (1000*60*60*24))} 天`
+                : "已过期"}
+            </p>
+          </div>
+        )}
         
         <div className="bounty-info">
           <h2>发布者</h2>

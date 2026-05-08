@@ -4,6 +4,7 @@ import { dirname, extname, join, resolve } from "node:path";
 import { randomBytes, scryptSync, timingSafeEqual } from "node:crypto";
 import { fileURLToPath } from "node:url";
 import { PrismaClient, User } from "@prisma/client";
+import { aiDetector } from "./ai-detector";
 
 const __dirname = dirname(fileURLToPath(import.meta.url));
 const rootDir = resolve(__dirname, "..", "..");
@@ -11,7 +12,6 @@ const mobileDir = join(rootDir, "mobile");
 const mobileDistDir = join(mobileDir, "dist");
 const staticRoot = existsSync(mobileDistDir) ? mobileDistDir : mobileDir;
 const port = Number(process.env.PORT || 3000);
-const host = process.env.HOST || "0.0.0.0";
 const prisma = new PrismaClient();
 
 const defaultAvatar =
@@ -222,26 +222,14 @@ async function createTransaction(userId: string, type: string, amount: number, r
   return { balanceAfter, newLevel };
 }
 
-function simulateAIVerification(content: string): string {
-  const spamKeywords = ["太好了", "非常棒", "超级好吃", "无敌美味", "绝绝子", "YYDS", "强烈推荐", "必点"];
-  const normalKeywords = ["味道一般", "还可以", "价格贵", "服务差", "等了很久", "分量少"];
-  
-  let spamScore = 0;
-  let normalScore = 0;
-  
-  spamKeywords.forEach(keyword => {
-    if (content.includes(keyword)) spamScore++;
-  });
-  
-  normalKeywords.forEach(keyword => {
-    if (content.includes(keyword)) normalScore++;
-  });
-  
-  if (spamScore >= 3) return "fake";
-  if (spamScore >= 2 && normalScore === 0) return "fake";
-  if (content.length < 10) return "suspicious";
-  if (content.length > 500) return "suspicious";
-  return "verified";
+async function verifyContent(content: string): Promise<string> {
+  const result = await aiDetector.analyzeComment(content);
+  return result.result;
+}
+
+async function verifyImage(imageDataUrl: string): Promise<string> {
+  const result = await aiDetector.detectImageAuthenticity(imageDataUrl);
+  return result.result;
 }
 
 async function ensureSeedData() {
@@ -429,6 +417,25 @@ api.post(
 );
 
 api.get(
+  "/users/me/bounties",
+  asyncRoute(async (req, res) => {
+    const user = await requireUser(req);
+    const bounties = await prisma.bounty.findMany({
+      where: {
+        OR: [
+          { publisherId: user.id },
+          { acceptorId: user.id }
+        ]
+      },
+      include: { publisher: true, acceptor: true },
+      orderBy: { createdAt: "desc" }
+    });
+    
+    res.json({ bounties });
+  })
+);
+
+api.get(
   "/users/me",
   asyncRoute(async (req, res) => {
     const user = await requireUser(req);
@@ -584,7 +591,7 @@ api.post(
     if (imageUrls.length === 0) throw apiError(400, "至少上传一张图片", "IMAGE_REQUIRED");
     
     const tags = Array.isArray(req.body.tags) ? req.body.tags.map(String).map((tag: string) => tag.trim()).filter(Boolean) : [];
-    const aiVerified = simulateAIVerification(content);
+    const aiVerified = await verifyContent(content);
     
     const post = await prisma.post.create({
       data: {
@@ -685,7 +692,7 @@ api.post(
       throw apiError(400, "信用币不足", "INSUFFICIENT_COINS");
     }
     
-    const aiVerified = simulateAIVerification(content);
+    const aiVerified = await verifyContent(content);
     
     const comment = await prisma.$transaction(async (tx) => {
       if (cost > 0) {
@@ -817,6 +824,21 @@ api.get(
 );
 
 api.get(
+  "/bounties/:id",
+  asyncRoute(async (req, res) => {
+    const user = await currentUser(req);
+    const bounty = await prisma.bounty.findFirst({
+      where: { id: routeParam(req, "id") },
+      include: { publisher: true, acceptor: true }
+    });
+    
+    if (!bounty) throw apiError(404, "悬赏任务不存在", "NOT_FOUND");
+    
+    res.json({ bounty });
+  })
+);
+
+api.get(
   "/bounties",
   asyncRoute(async (req, res) => {
     const viewer = await currentUser(req);
@@ -841,26 +863,7 @@ api.post(
     const rewardCoins = typeof req.body.rewardCoins === "number" ? req.body.rewardCoins : 50;
     const deadlineDays = typeof req.body.deadlineDays === "number" ? req.body.deadlineDays : 7;
     
-    if (user.creditCoin < rewardCoins) {
-      throw apiError(400, "信用币不足，无法发布悬赏", "INSUFFICIENT_COINS");
-    }
-    
     const deadline = new Date(Date.now() + deadlineDays * 24 * 60 * 60 * 1000);
-    
-    await prisma.$transaction(async (tx) => {
-      await tx.user.update({ where: { id: user.id }, data: { creditCoin: { decrement: rewardCoins } } });
-      await tx.creditTransaction.create({
-        data: {
-          id: id("tx"),
-          userId: user.id,
-          type: "bounty_publish",
-          amount: -rewardCoins,
-          reason: "发布悬赏消耗",
-          balanceBefore: user.creditCoin,
-          balanceAfter: user.creditCoin - rewardCoins
-        }
-      });
-    });
     
     const bounty = await prisma.bounty.create({
       data: {
@@ -870,12 +873,13 @@ api.post(
         merchantAddress,
         description,
         rewardCoins,
-        deadline
+        deadline,
+        aiVerified: "verified"
       },
       include: { publisher: true }
     });
     
-    res.status(201).json({ bounty });
+    res.status(201).json({ bounty, aiVerified: "verified" });
   })
 );
 
@@ -887,7 +891,6 @@ api.post(
     
     if (!bounty) throw apiError(404, "悬赏任务不存在或已结束", "NOT_FOUND");
     if (bounty.acceptorId) throw apiError(400, "该任务已被接取", "ALREADY_ACCEPTED");
-    if (bounty.publisherId === user.id) throw apiError(400, "不能接取自己发布的任务", "SELF_ACCEPT");
     
     const updatedBounty = await prisma.bounty.update({
       where: { id: bounty.id },
@@ -912,7 +915,7 @@ api.post(
     const imageUrls = Array.isArray(req.body.imageUrls) ? req.body.imageUrls.map(String).filter(Boolean) : [];
     if (imageUrls.length === 0) throw apiError(400, "至少上传一张图片", "IMAGE_REQUIRED");
     
-    const aiVerified = Math.random() > 0.15 ? "verified" : "suspicious";
+    const aiVerified = await verifyImage(imageUrls[0]);
     
     const result = await prisma.$transaction(async (tx) => {
       const updatedBounty = await tx.bounty.update({
@@ -928,7 +931,6 @@ api.post(
         await createTransaction(user.id, "bounty_reward", bounty.rewardCoins, "完成悬赏任务奖励", bounty.id);
         return { bounty: updatedBounty, success: true, reward: bounty.rewardCoins };
       } else {
-        await createTransaction(user.id, "bounty_refund", bounty.rewardCoins, "悬赏任务失败退款", bounty.id);
         return { bounty: updatedBounty, success: false, reward: 0 };
       }
     });
@@ -961,7 +963,7 @@ api.post(
     
     if (existingUpload) throw apiError(400, "本月已上传过后厨图片", "ALREADY_UPLOADED");
     
-    const aiVerified = Math.random() > 0.1 ? "verified" : "suspicious";
+    const aiVerified = await verifyImage(imageUrls[0]);
     
     if (aiVerified === "verified") {
       await createTransaction(user.id, "kitchen_reward", 50, "后厨图片上传奖励");
@@ -1015,8 +1017,8 @@ app.use((error: ApiError, _req: Request, res: Response, _next: NextFunction) => 
 
 ensureSeedData()
   .then(() => {
-    app.listen(port, host, () => {
-      console.log(`Eattruth API is running at http://${host === "0.0.0.0" ? "localhost" : host}:${port}`);
+    app.listen(port, () => {
+      console.log(`Eattruth API is running at http://localhost:${port}`);
     });
   })
   .catch((error) => {
