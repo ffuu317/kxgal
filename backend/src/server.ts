@@ -11,6 +11,7 @@ const mobileDir = join(rootDir, "mobile");
 const mobileDistDir = join(mobileDir, "dist");
 const staticRoot = existsSync(mobileDistDir) ? mobileDistDir : mobileDir;
 const port = Number(process.env.PORT || 3000);
+const host = process.env.HOST || "0.0.0.0";
 const prisma = new PrismaClient();
 
 const defaultAvatar =
@@ -1014,8 +1015,8 @@ app.use((error: ApiError, _req: Request, res: Response, _next: NextFunction) => 
 
 ensureSeedData()
   .then(() => {
-    app.listen(port, () => {
-      console.log(`Eattruth API is running at http://localhost:${port}`);
+    app.listen(port, host, () => {
+      console.log(`Eattruth API is running at http://${host}:${port}`);
     });
   })
   .catch((error) => {

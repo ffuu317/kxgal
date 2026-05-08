@@ -36,6 +36,20 @@ npm run dev
 http://127.0.0.1:5173
 ```
 
+局域网内其他设备访问时，将地址中的 `127.0.0.1` 换成这台电脑的局域网 IP，例如：
+
+```text
+http://192.168.1.23:5173
+```
+
+也可以直接使用启动日志里 Vite 打印的 `Network` 地址。
+
+macOS 可以用下面的命令查看当前 Wi-Fi 局域网 IP：
+
+```bash
+ipconfig getifaddr en0
+```
+
 后端 API 地址：
 
 ```text
