@@ -3,7 +3,8 @@ import { createReadStream, existsSync } from "node:fs";
 import { dirname, extname, join, resolve } from "node:path";
 import { randomBytes, scryptSync, timingSafeEqual } from "node:crypto";
 import { fileURLToPath } from "node:url";
-import { PrismaClient, User } from "@prisma/client";
+import { PrismaClient } from "@prisma/client";
+import type { Prisma, User } from "@prisma/client";
 import { aiDetector } from "./ai-detector";
 
 const __dirname = dirname(fileURLToPath(import.meta.url));
@@ -29,6 +30,7 @@ const demoImage =
 type ApiError = Error & { status?: number; code?: string };
 type PostWithAuthor = Awaited<ReturnType<typeof findPostWithAuthor>>;
 type CommentWithAuthor = Awaited<ReturnType<typeof findCommentsWithAuthor>>[number];
+type DbClient = PrismaClient | Prisma.TransactionClient;
 
 function asyncRoute(handler: (req: Request, res: Response, next: NextFunction) => Promise<void>) {
   return (req: Request, res: Response, next: NextFunction) => {
@@ -186,20 +188,15 @@ function getCommentCost(level: string): number {
   }
 }
 
-async function updateUserLevel(userId: string, coins: number) {
-  const newLevel = getLevelByCoins(coins);
-  await prisma.user.update({ where: { id: userId }, data: { level: newLevel } });
-  return newLevel;
-}
-
-async function createTransaction(userId: string, type: string, amount: number, reason: string, relatedId?: string) {
-  const user = await prisma.user.findUnique({ where: { id: userId } });
+async function createTransaction(userId: string, type: string, amount: number, reason: string, relatedId?: string, db: DbClient = prisma) {
+  const user = await db.user.findUnique({ where: { id: userId } });
   if (!user) throw apiError(404, "用户不存在");
   
   const balanceBefore = user.creditCoin;
   const balanceAfter = balanceBefore + amount;
+  const newLevel = getLevelByCoins(balanceAfter);
   
-  await prisma.creditTransaction.create({
+  await db.creditTransaction.create({
     data: {
       id: id("tx"),
       userId,
@@ -212,9 +209,7 @@ async function createTransaction(userId: string, type: string, amount: number, r
     }
   });
   
-  const newLevel = await updateUserLevel(userId, balanceAfter);
-  
-  await prisma.user.update({
+  await db.user.update({
     where: { id: userId },
     data: { creditCoin: balanceAfter, level: newLevel }
   });
@@ -728,7 +723,7 @@ api.post(
       
       if (aiVerified === "fake") {
         await tx.user.update({ where: { id: user.id }, data: { warningCount: { increment: 1 } } });
-        await createTransaction(user.id, "penalty", -20, "AI检测为水军发言", created.id);
+        await createTransaction(user.id, "penalty", -20, "AI检测为水军发言", created.id, tx);
         
         const updatedUser = await tx.user.findUnique({ where: { id: user.id } });
         if (updatedUser!.warningCount >= 4) {
@@ -928,7 +923,7 @@ api.post(
       });
       
       if (aiVerified === "verified") {
-        await createTransaction(user.id, "bounty_reward", bounty.rewardCoins, "完成悬赏任务奖励", bounty.id);
+        await createTransaction(user.id, "bounty_reward", bounty.rewardCoins, "完成悬赏任务奖励", bounty.id, tx);
         return { bounty: updatedBounty, success: true, reward: bounty.rewardCoins };
       } else {
         return { bounty: updatedBounty, success: false, reward: 0 };
