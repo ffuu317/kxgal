@@ -119,6 +119,7 @@ function App() {
   const [comments, setComments] = useState<Comment[]>([]);
   const [transactions, setTransactions] = useState<Transaction[]>([]);
   const [bounties, setBounties] = useState<Bounty[]>([]);
+  const [myBounties, setMyBounties] = useState<Bounty[]>([]);
   const [view, setView] = useState<View>("home");
   const [selectedPost, setSelectedPost] = useState<Post | null>(null);
   const [selectedBounty, setSelectedBounty] = useState<Bounty | null>(null);
@@ -128,7 +129,7 @@ function App() {
   const [message, setMessage] = useState("");
 
   const myPosts = useMemo(() => posts.filter((post) => post.authorId === user?.id), [posts, user]);
-  const myBounties = useMemo(() => bounties.filter((b) => b.publisherId === user?.id || b.acceptorId === user?.id), [bounties, user]);
+  const recentTransactions = useMemo(() => transactions.slice(0, 3), [transactions]);
 
   async function api<T>(path: string, options: RequestInit = {}) {
     return request<T>(path, token, options);
@@ -153,7 +154,7 @@ function App() {
   async function loadMyBounties() {
     try {
       const data = await api<{ bounties: Bounty[] }>("/users/me/bounties");
-      setBounties(data.bounties);
+      setMyBounties(data.bounties);
     } catch (error) {
       console.error("Failed to load my bounties:", error);
     }
@@ -162,6 +163,12 @@ function App() {
   async function loadTransactions() {
     const data = await api<{ transactions: Transaction[] }>("/users/me/transactions");
     setTransactions(data.transactions);
+  }
+
+  async function refreshMe() {
+    if (!token) return;
+    const data = await api<{ user: User }>("/users/me");
+    setUser(data.user);
   }
 
   async function openPost(id: string) {
@@ -318,6 +325,8 @@ function App() {
       });
       setReceiptDataUrl("");
       await openPost(selectedPost.id);
+      await refreshMe();
+      await loadTransactions().catch(() => {});
       flash("评论已发布");
     } catch (error) {
       flash((error as Error).message);
@@ -376,7 +385,9 @@ function App() {
   async function acceptBounty(bountyId: string) {
     if (!user) return setView("login");
     try {
-      await api(`/bounties/${bountyId}/accept`, { method: "POST", body: "{}" });
+      const data = await api<{ bounty: Bounty }>(`/bounties/${bountyId}/accept`, { method: "POST", body: "{}" });
+      setSelectedBounty(data.bounty);
+      await loadBounties();
       await loadMyBounties();
       flash("已接取任务，请到详情页上传图片完成悬赏");
     } catch (error) {
@@ -392,11 +403,15 @@ function App() {
     }
     try {
       const imageUrl = await uploadImage(imageDataUrl, "post-image");
-      const data = await api<{ success: boolean; reward: number }>(`/bounties/${bountyId}/submit`, {
+      const data = await api<{ bounty: Bounty; success: boolean; reward: number }>(`/bounties/${bountyId}/submit`, {
         method: "POST",
         body: JSON.stringify({ imageUrls: [imageUrl] })
       });
       setImageDataUrl("");
+      setSelectedBounty(data.bounty);
+      await refreshMe();
+      await loadTransactions().catch(() => {});
+      await loadBounties();
       await loadMyBounties();
       flash(data.success ? `任务完成，获得${data.reward}信用币` : "图片检测未通过，任务失败");
     } catch (error) {
@@ -461,7 +476,7 @@ function App() {
   }, [token]);
 
   useEffect(() => {
-    if (view === "credit" && user) {
+    if ((view === "credit" || view === "mine") && user) {
       loadTransactions().catch(() => {});
     }
   }, [view, user]);
@@ -515,6 +530,7 @@ function App() {
           user={user}
           posts={myPosts}
           myBounties={myBounties}
+          transactions={recentTransactions}
           onGo={setView}
           onOpenPost={openPost}
           onOpenBounty={openBounty}
@@ -581,6 +597,28 @@ function App() {
   );
 }
 
+function aiLabel(status: string) {
+  if (status === "verified") return "AI已验真";
+  if (status === "fake") return "疑似虚假";
+  if (status === "suspicious") return "需复核";
+  return "待验真";
+}
+
+function bountyStatusLabel(status: string) {
+  if (status === "active") return "待接单";
+  if (status === "accepted") return "验证中";
+  if (status === "completed") return "已完成";
+  if (status === "failed") return "未通过";
+  return status;
+}
+
+function commentCostLabel(level?: string) {
+  if (level === "L100") return "评论免费";
+  if (level === "L10") return "评论扣 5 信用币";
+  if (level === "L1") return "评论扣 10 信用币，需消费截图";
+  return "L0 暂不可评论";
+}
+
 function HomeView({
   user,
   query,
@@ -616,6 +654,20 @@ function HomeView({
         <input name="q" defaultValue={query} placeholder="搜索帖子、商家或标签" />
         <button type="submit">搜索</button>
       </form>
+      <section className="value-strip" aria-label="可信评价规则">
+        <div>
+          <strong>AI验真</strong>
+          <span>图片与文本先过筛</span>
+        </div>
+        <div>
+          <strong>信用等级</strong>
+          <span>评论成本抑制刷评</span>
+        </div>
+        <div>
+          <strong>悬赏验证</strong>
+          <span>现场图完成闭环</span>
+        </div>
+      </section>
       <section className="feed">
         {posts.length ? posts.map((post) => <PostCard key={post.id} post={post} onOpenPost={onOpenPost} />) : <Empty />}
       </section>
@@ -708,8 +760,19 @@ function DetailView({
           <h1>{post.title}</h1>
           <p>{post.content}</p>
           <div className="tags">{post.tags.map((tag) => <span key={tag}>{tag}</span>)}</div>
-          <div className="ai-badge" data-status={post.aiVerified}>
-            {post.aiVerified === "verified" ? "✓ AI已验真" : post.aiVerified === "fake" ? "✗ 疑似虚假" : "待验真"}
+          <div className="trust-strip">
+            <div>
+              <span>帖子验真</span>
+              <strong>{aiLabel(post.aiVerified)}</strong>
+            </div>
+            <div>
+              <span>消费截图</span>
+              <strong>{comments.some((comment) => comment.receiptImageUrl) ? "评论区已补充" : "暂无截图"}</strong>
+            </div>
+            <div>
+              <span>评论规则</span>
+              <strong>{commentCostLabel(user?.level)}</strong>
+            </div>
           </div>
           <div className="actions">
             <button className={post.likedByMe ? "liked" : ""} onClick={() => onLike(post)}>
@@ -736,11 +799,12 @@ function DetailView({
                 <p>{comment.content}</p>
                 <div className="comment-meta">
                   <span className="ai-badge mini" data-status={comment.aiVerified}>
-                    {comment.aiVerified === "verified" ? "已验真" : comment.aiVerified === "fake" ? "疑似水军" : "待验真"}
+                    {aiLabel(comment.aiVerified)}
                   </span>
                   {comment.consumedCoins > 0 && <span>消耗{comment.consumedCoins}币</span>}
-                  {comment.receiptImageUrl && <span>有消费截图</span>}
+                  <span>{comment.receiptImageUrl ? "消费截图已提交" : "无消费截图"}</span>
                 </div>
+                {comment.receiptImageUrl ? <img className="receipt-preview inline-receipt" src={comment.receiptImageUrl} alt="" /> : null}
               </div>
               {user?.id === comment.authorId ? <button onClick={() => onDeleteComment(comment.id)}>删除</button> : null}
             </div>
@@ -750,10 +814,10 @@ function DetailView({
         )}
         <form className="comment-form" onSubmit={onAddComment}>
           {needReceipt && (
-            <div className="receipt-upload">
+            <label className="receipt-upload">
               <input type="file" accept="image/*" onChange={(event) => onPickReceipt(event.currentTarget.files?.[0])} />
               {receiptDataUrl ? <img className="receipt-preview" src={receiptDataUrl} alt="" /> : <span>L1用户需上传消费截图</span>}
-            </div>
+            </label>
           )}
           <input name="content" placeholder={user ? "写下你的真实体验" : "登录后评论"} disabled={!user} />
           <button type="submit">发送</button>
@@ -809,6 +873,7 @@ function MineView({
   user,
   posts,
   myBounties,
+  transactions,
   onGo,
   onOpenPost,
   onOpenBounty,
@@ -819,6 +884,7 @@ function MineView({
   user: User | null;
   posts: Post[];
   myBounties: Bounty[];
+  transactions: Transaction[];
   onGo: (view: View) => void;
   onOpenPost: (id: string) => void;
   onOpenBounty: (id: string) => void;
@@ -840,7 +906,6 @@ function MineView({
           <p>{user.bio || "还没有简介"}</p>
           <div className="credit-display">
             <div className="credit-item">
-              <span className="credit-icon">💰</span>
               <span className="credit-value">{user.creditCoin}</span>
               <span className="credit-label">信用币</span>
             </div>
@@ -853,6 +918,41 @@ function MineView({
         {user.idCardVerified && <span className="badge">已实名</span>}
         {user.isMerchant && <span className="badge merchant">{user.merchantStatus}</span>}
         {user.warningCount > 0 && <span className="badge warning">警告{user.warningCount}次</span>}
+      </section>
+
+      <section className="panel compact-panel">
+        <div className="section-head">
+          <h2>信用币与等级</h2>
+          <button className="text-link" onClick={() => onGo("credit")}>规则</button>
+        </div>
+        <div className="rule-grid">
+          <div>
+            <strong>登录</strong>
+            <span>每日 +5</span>
+          </div>
+          <div>
+            <strong>完成任务</strong>
+            <span>悬赏 +50</span>
+          </div>
+          <div>
+            <strong>发表评论</strong>
+            <span>{user.level === "L100" ? "免费" : user.level === "L10" ? "-5" : user.level === "L1" ? "-10" : "需升级"}</span>
+          </div>
+        </div>
+      </section>
+
+      <section className="panel compact-panel">
+        <div className="section-head">
+          <h2>交易明细</h2>
+          <button className="text-link" onClick={() => onGo("credit")}>全部</button>
+        </div>
+        {transactions.length ? (
+          <div className="transaction-list mini-list">
+            {transactions.map((tx) => <TransactionRow key={tx.id} tx={tx} />)}
+          </div>
+        ) : (
+          <Empty text="登录、评论和完成任务后会生成流水" />
+        )}
       </section>
       
       <section className="panel">
@@ -954,7 +1054,7 @@ function BountyView({
       
       <section className="tabs">
         <button className="active">全部悬赏</button>
-        <button onClick={() => onGo("mine")}>我的参与</button>
+        <button onClick={() => onGo("mine")}>我的参与 {myBounties.length ? myBounties.length : ""}</button>
       </section>
       
       <section className="feed">
@@ -973,7 +1073,7 @@ function BountyView({
               </div>
               <p className="bounty-desc">{bounty.description}</p>
               <div className="bounty-footer">
-                <span>{bounty.status === "active" ? "可接取" : bounty.status === "accepted" ? "进行中" : "已完成"}</span>
+                <span className={`status-tag ${bounty.status}`}>{bountyStatusLabel(bounty.status)}</span>
                 <span>发布于 {new Date(bounty.createdAt).toLocaleDateString()}</span>
               </div>
               {user && bounty.status === "active" && (
@@ -1050,6 +1150,7 @@ function BountyDetailView({
 }) {
   const isAcceptor = user?.id === bounty.acceptorId;
   const canSubmit = isAcceptor && bounty.status === "accepted";
+  const bountyImages = bounty.imageUrls || [];
   
   return (
     <>
@@ -1060,13 +1161,27 @@ function BountyDetailView({
             <h1>{bounty.merchantName}</h1>
             <p>{bounty.merchantAddress}</p>
           </div>
-          <div className="bounty-badge">{bounty.status}</div>
+          <div className={`bounty-badge ${bounty.status}`}>{bountyStatusLabel(bounty.status)}</div>
         </div>
         
         <div className="reward-display">
-          <span className="reward-icon">💰</span>
           <span className="reward-value">{bounty.rewardCoins}</span>
           <span className="reward-label">信用币奖励</span>
+        </div>
+
+        <div className="trust-strip bounty-trust">
+          <div>
+            <span>AI验真</span>
+            <strong>{aiLabel(bounty.aiVerified)}</strong>
+          </div>
+          <div>
+            <span>现场图</span>
+            <strong>{bountyImages.length ? "已上传" : "待上传"}</strong>
+          </div>
+          <div>
+            <span>流程</span>
+            <strong>接单 → 上传 → 奖励</strong>
+          </div>
         </div>
         
         <div className="bounty-info">
@@ -1102,6 +1217,13 @@ function BountyDetailView({
             </div>
           </div>
         )}
+
+        {bountyImages.length ? (
+          <div className="bounty-info">
+            <h2>验证图片</h2>
+            <img className="preview" src={bountyImages[0]} alt="" />
+          </div>
+        ) : null}
         
         {canSubmit && (
           <div className="submit-section">
@@ -1154,17 +1276,7 @@ function CreditView({
         <h2>交易记录</h2>
         {transactions.length ? (
           <div className="transaction-list">
-            {transactions.map((tx) => (
-              <div className="transaction-item" key={tx.id}>
-                <div className="tx-info">
-                  <span className="tx-reason">{tx.reason}</span>
-                  <span className="tx-date">{new Date(tx.createdAt).toLocaleString()}</span>
-                </div>
-                <span className={`tx-amount ${tx.amount > 0 ? "positive" : "negative"}`}>
-                  {tx.amount > 0 ? "+" : ""}{tx.amount}
-                </span>
-              </div>
-            ))}
+            {transactions.map((tx) => <TransactionRow key={tx.id} tx={tx} />)}
           </div>
         ) : (
           <Empty text="暂无交易记录" />
@@ -1193,6 +1305,20 @@ function CreditView({
         </div>
       </section>
     </>
+  );
+}
+
+function TransactionRow({ tx }: { tx: Transaction }) {
+  return (
+    <div className="transaction-item">
+      <div className="tx-info">
+        <span className="tx-reason">{tx.reason}</span>
+        <span className="tx-date">{new Date(tx.createdAt).toLocaleString()}</span>
+      </div>
+      <span className={`tx-amount ${tx.amount > 0 ? "positive" : "negative"}`}>
+        {tx.amount > 0 ? "+" : ""}{tx.amount}
+      </span>
+    </div>
   );
 }
 
@@ -1308,6 +1434,10 @@ function PostCard({ post, onOpenPost }: { post: Post; onOpenPost: (id: string) =
     <article className="post-card" onClick={() => onOpenPost(post.id)}>
       <img className="post-cover" src={post.coverImageUrl} alt="" />
       <div className="post-body">
+        <div className="card-topline">
+          <span>{post.merchantName || "未关联商家"}</span>
+          <span className="ai-badge mini" data-status={post.aiVerified}>{aiLabel(post.aiVerified)}</span>
+        </div>
         <h3>{post.title}</h3>
         <p>{post.content}</p>
         <div className="meta">
@@ -1319,7 +1449,6 @@ function PostCard({ post, onOpenPost }: { post: Post; onOpenPost: (id: string) =
             {post.likeCount} 赞 · {post.commentCount} 评
           </span>
         </div>
-        {post.aiVerified === "verified" && <span className="ai-badge mini">✓ AI已验真</span>}
       </div>
     </article>
   );

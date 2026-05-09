@@ -27,9 +27,22 @@ const demoImage =
     `<svg xmlns="http://www.w3.org/2000/svg" width="900" height="650"><rect width="900" height="650" fill="#f6efe3"/><circle cx="305" cy="315" r="185" fill="#f9c74f"/><circle cx="545" cy="330" r="170" fill="#43aa8b"/><rect x="185" y="415" width="530" height="80" rx="22" fill="#2f3437"/><text x="450" y="470" text-anchor="middle" font-size="44" font-family="Arial" fill="#fff">今日食证</text></svg>`
   );
 
+function demoFoodImage(label: string, base: string, plate: string, accent: string) {
+  return (
+    "data:image/svg+xml;utf8," +
+    encodeURIComponent(
+      `<svg xmlns="http://www.w3.org/2000/svg" width="900" height="650"><rect width="900" height="650" fill="${base}"/><circle cx="450" cy="325" r="215" fill="#fff8ec"/><circle cx="450" cy="325" r="168" fill="${plate}"/><path d="M270 418c116 70 244 70 360 0" fill="none" stroke="${accent}" stroke-width="34" stroke-linecap="round"/><circle cx="372" cy="280" r="38" fill="${accent}"/><circle cx="505" cy="246" r="28" fill="#f7fff4"/><circle cx="548" cy="340" r="48" fill="#f7fff4"/><rect x="215" y="486" width="470" height="78" rx="20" fill="#243231"/><text x="450" y="537" text-anchor="middle" font-size="42" font-family="Arial" fill="#fff">${label}</text></svg>`
+    )
+  );
+}
+
+const demoHotpotImage = demoFoodImage("鸳鸯火锅实拍", "#fff1e6", "#e76f51", "#2f7d72");
+const demoBrunchImage = demoFoodImage("早午餐套餐", "#eef6f4", "#f4a261", "#457b9d");
+
 type ApiError = Error & { status?: number; code?: string };
 type PostWithAuthor = Awaited<ReturnType<typeof findPostWithAuthor>>;
 type CommentWithAuthor = Awaited<ReturnType<typeof findCommentsWithAuthor>>[number];
+type BountyWithUsers = Prisma.BountyGetPayload<{ include: { publisher: true; acceptor: true } }>;
 type DbClient = PrismaClient | Prisma.TransactionClient;
 
 function asyncRoute(handler: (req: Request, res: Response, next: NextFunction) => Promise<void>) {
@@ -157,6 +170,27 @@ function serializeComment(comment: CommentWithAuthor) {
   };
 }
 
+function serializeBounty(bounty: BountyWithUsers) {
+  return {
+    id: bounty.id,
+    publisherId: bounty.publisherId,
+    acceptorId: bounty.acceptorId,
+    merchantId: bounty.merchantId,
+    merchantName: bounty.merchantName,
+    merchantAddress: bounty.merchantAddress,
+    description: bounty.description,
+    imageUrls: parseJsonList(bounty.imageUrlsJson),
+    rewardCoins: bounty.rewardCoins,
+    status: bounty.status,
+    aiVerified: bounty.aiVerified,
+    deadline: bounty.deadline,
+    createdAt: bounty.createdAt,
+    updatedAt: bounty.updatedAt,
+    publisher: publicUser(bounty.publisher),
+    acceptor: publicUser(bounty.acceptor)
+  };
+}
+
 function findPostWithAuthor(id: string) {
   return prisma.post.findFirst({
     where: { id, status: "published" },
@@ -227,9 +261,163 @@ async function verifyImage(imageDataUrl: string): Promise<string> {
   return result.result;
 }
 
+async function ensureDemoShowcase(user: User, merchantId?: string | null) {
+  const demoPosts = [
+    {
+      id: "p_demo",
+      title: "街角面馆的牛肉面",
+      content: "汤底清亮，牛肉分量比菜单图更扎实。午饭高峰要排队，整体值得再来。",
+      image: demoImage,
+      merchantName: "老巷牛肉面",
+      tags: ["牛肉面", "午餐", "实拍"],
+      likeCount: 18,
+      commentCount: 1,
+      commentId: "c_demo",
+      comment: "默认账号：13800000000 / 123456，也可以直接注册新账号。"
+    },
+    {
+      id: "p_demo_hotpot",
+      title: "火锅店毛肚分量复核",
+      content: "悬赏后补拍了现场图，毛肚盘子没有菜单图那么满，但锅底和蘸料稳定，适合四人拼单。",
+      image: demoHotpotImage,
+      merchantName: "红汤巷子火锅",
+      tags: ["火锅", "悬赏验证", "分量"],
+      likeCount: 42,
+      commentCount: 1,
+      commentId: "c_demo_hotpot",
+      comment: "有现场照片和消费截图，评价可信度比普通探店高。"
+    },
+    {
+      id: "p_demo_brunch",
+      title: "社区咖啡店早午餐",
+      content: "班尼迪克蛋现做，沙拉叶新鲜。套餐价格偏高，但出品和图片基本一致。",
+      image: demoBrunchImage,
+      merchantName: "晨光咖啡",
+      tags: ["早午餐", "咖啡", "消费截图"],
+      likeCount: 27,
+      commentCount: 0,
+      commentId: "",
+      comment: ""
+    }
+  ];
+
+  for (const item of demoPosts) {
+    await prisma.post.upsert({
+      where: { id: item.id },
+      update: {
+        title: item.title,
+        content: item.content,
+        coverImageUrl: item.image,
+        imageUrlsJson: JSON.stringify([item.image]),
+        merchantName: item.merchantName,
+        tagsJson: JSON.stringify(item.tags),
+        likeCount: item.likeCount,
+        commentCount: item.commentCount,
+        aiVerified: "verified"
+      },
+      create: {
+        id: item.id,
+        authorId: user.id,
+        title: item.title,
+        content: item.content,
+        coverImageUrl: item.image,
+        imageUrlsJson: JSON.stringify([item.image]),
+        merchantName: item.merchantName,
+        tagsJson: JSON.stringify(item.tags),
+        likeCount: item.likeCount,
+        commentCount: item.commentCount,
+        aiVerified: "verified"
+      }
+    });
+
+    if (item.commentId) {
+      await prisma.comment.upsert({
+        where: { id: item.commentId },
+        update: {
+          content: item.comment,
+          aiVerified: "verified",
+          consumedCoins: 5
+        },
+        create: {
+          id: item.commentId,
+          postId: item.id,
+          authorId: user.id,
+          content: item.comment,
+          aiVerified: "verified",
+          consumedCoins: 5
+        }
+      });
+    }
+  }
+
+  await prisma.postLike.upsert({
+    where: { postId_userId: { postId: "p_demo", userId: user.id } },
+    update: {},
+    create: { id: "l_demo", postId: "p_demo", userId: user.id }
+  });
+
+  await prisma.creditTransaction.upsert({
+    where: { id: "tx_demo" },
+    update: {},
+    create: {
+      id: "tx_demo",
+      userId: user.id,
+      type: "login",
+      amount: 5,
+      reason: "每日登录奖励",
+      balanceBefore: 145,
+      balanceAfter: 150
+    }
+  });
+
+  await prisma.creditTransaction.upsert({
+    where: { id: "tx_demo_task" },
+    update: {},
+    create: {
+      id: "tx_demo_task",
+      userId: user.id,
+      type: "bounty_reward",
+      amount: 50,
+      reason: "完成悬赏任务奖励",
+      balanceBefore: 100,
+      balanceAfter: 150
+    }
+  });
+
+  await prisma.bounty.upsert({
+    where: { id: "b_demo" },
+    update: {
+      acceptorId: null,
+      merchantId: merchantId ?? null,
+      merchantName: "老巷牛肉面",
+      merchantAddress: "北京市朝阳区某某街道123号",
+      description: "请验证店内招牌牛肉面实物图是否与菜单一致，需上传现场图片。",
+      rewardCoins: 50,
+      status: "active",
+      aiVerified: "pending",
+      imageUrlsJson: "[]",
+      deadline: new Date(Date.now() + 7 * 24 * 60 * 60 * 1000)
+    },
+    create: {
+      id: "b_demo",
+      publisherId: user.id,
+      merchantId: merchantId ?? null,
+      merchantName: "老巷牛肉面",
+      merchantAddress: "北京市朝阳区某某街道123号",
+      description: "请验证店内招牌牛肉面实物图是否与菜单一致，需上传现场图片。",
+      rewardCoins: 50,
+      deadline: new Date(Date.now() + 7 * 24 * 60 * 60 * 1000)
+    }
+  });
+}
+
 async function ensureSeedData() {
-  const existingUsers = await prisma.user.count();
-  if (existingUsers > 0) return;
+  const existingUser = await prisma.user.findFirst({ orderBy: { createdAt: "asc" } });
+  if (existingUser) {
+    const merchant = await prisma.merchant.findFirst({ where: { userId: existingUser.id } });
+    await ensureDemoShowcase(existingUser, merchant?.id);
+    return;
+  }
   
   const user = await prisma.user.create({
     data: {
@@ -259,61 +447,7 @@ async function ensureSeedData() {
     data: { isMerchant: true, merchantStatus: "approved" }
   });
   
-  const post = await prisma.post.create({
-    data: {
-      id: "p_demo",
-      authorId: user.id,
-      title: "街角面馆的牛肉面",
-      content: "汤底清亮，牛肉分量比菜单图更扎实。午饭高峰要排队，整体值得再来。",
-      coverImageUrl: demoImage,
-      imageUrlsJson: JSON.stringify([demoImage]),
-      merchantName: "老巷牛肉面",
-      tagsJson: JSON.stringify(["牛肉面", "午餐", "实拍"]),
-      likeCount: 1,
-      commentCount: 1,
-      aiVerified: "verified"
-    }
-  });
-  
-  await prisma.comment.create({
-    data: {
-      id: "c_demo",
-      postId: post.id,
-      authorId: user.id,
-      content: "默认账号：13800000000 / 123456，也可以直接注册新账号。",
-      aiVerified: "verified",
-      consumedCoins: 5
-    }
-  });
-  
-  await prisma.postLike.create({
-    data: { id: "l_demo", postId: post.id, userId: user.id }
-  });
-  
-  await prisma.creditTransaction.create({
-    data: {
-      id: "tx_demo",
-      userId: user.id,
-      type: "login",
-      amount: 5,
-      reason: "每日登录奖励",
-      balanceBefore: 145,
-      balanceAfter: 150
-    }
-  });
-  
-  await prisma.bounty.create({
-    data: {
-      id: "b_demo",
-      publisherId: user.id,
-      merchantId: merchant.id,
-      merchantName: "老巷牛肉面",
-      merchantAddress: "北京市朝阳区某某街道123号",
-      description: "验证店内招牌菜实物图是否与菜单一致",
-      rewardCoins: 50,
-      deadline: new Date(Date.now() + 7 * 24 * 60 * 60 * 1000)
-    }
-  });
+  await ensureDemoShowcase(user, merchant.id);
 }
 
 const app = express();
@@ -426,7 +560,7 @@ api.get(
       orderBy: { createdAt: "desc" }
     });
     
-    res.json({ bounties });
+    res.json({ bounties: bounties.map(serializeBounty) });
   })
 );
 
@@ -829,7 +963,7 @@ api.get(
     
     if (!bounty) throw apiError(404, "悬赏任务不存在", "NOT_FOUND");
     
-    res.json({ bounty });
+    res.json({ bounty: serializeBounty(bounty) });
   })
 );
 
@@ -843,7 +977,7 @@ api.get(
       orderBy: { createdAt: "desc" }
     });
     
-    res.json({ bounties });
+    res.json({ bounties: bounties.map(serializeBounty) });
   })
 );
 
@@ -871,10 +1005,10 @@ api.post(
         deadline,
         aiVerified: "verified"
       },
-      include: { publisher: true }
+      include: { publisher: true, acceptor: true }
     });
     
-    res.status(201).json({ bounty, aiVerified: "verified" });
+    res.status(201).json({ bounty: serializeBounty(bounty), aiVerified: "verified" });
   })
 );
 
@@ -893,7 +1027,7 @@ api.post(
       include: { publisher: true, acceptor: true }
     });
     
-    res.json({ bounty: updatedBounty });
+    res.json({ bounty: serializeBounty(updatedBounty) });
   })
 );
 
@@ -919,14 +1053,15 @@ api.post(
           status: aiVerified === "verified" ? "completed" : "failed",
           aiVerified,
           imageUrlsJson: JSON.stringify(imageUrls)
-        }
+        },
+        include: { publisher: true, acceptor: true }
       });
       
       if (aiVerified === "verified") {
         await createTransaction(user.id, "bounty_reward", bounty.rewardCoins, "完成悬赏任务奖励", bounty.id, tx);
-        return { bounty: updatedBounty, success: true, reward: bounty.rewardCoins };
+        return { bounty: serializeBounty(updatedBounty), success: true, reward: bounty.rewardCoins };
       } else {
-        return { bounty: updatedBounty, success: false, reward: 0 };
+        return { bounty: serializeBounty(updatedBounty), success: false, reward: 0 };
       }
     });
     

@@ -287,13 +287,7 @@ export class AIDetector {
   }
 
   private fallbackImageDetection(): AIDetectionResult {
-    const random = Math.random();
-    if (random < 0.1) {
-      return { result: "fake", confidence: 0.6, reason: "图片检测未通过" };
-    } else if (random < 0.25) {
-      return { result: "suspicious", confidence: 0.5, reason: "图片需要人工复核" };
-    }
-    return { result: "verified", confidence: 0.85 };
+    return { result: "verified", confidence: 0.85, reason: "本地演示模式自动通过" };
   }
 
   async batchDetect(contents: string[]): Promise<AIDetectionResult[]> {
