@@ -532,6 +532,28 @@ label,
   color: #856404;
 }
 
+.credibility-badge {
+  display: inline-flex;
+  align-items: center;
+  min-height: 18px;
+  padding: 2px 8px;
+  border-radius: 999px;
+  background: #edf6f2;
+  color: #2f6f5d;
+  font-size: 10px;
+  font-weight: 700;
+}
+
+.credibility-badge[data-level="medium"] {
+  background: #fff5dc;
+  color: #8a5a00;
+}
+
+.credibility-badge[data-level="low"] {
+  background: #ffe8e1;
+  color: #9b331f;
+}
+
 .trust-strip {
   grid-template-columns: repeat(3, 1fr);
   padding: 12px;

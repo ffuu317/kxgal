@@ -45,6 +45,10 @@ type Comment = {
   content: string;
   status: string;
   aiVerified: string;
+  credibilityScore: number;
+  credibilityLabel: string;
+  credibilityReason: string;
+  credibilityModel: string;
   consumedCoins: number;
   receiptImageUrl: string | null;
   createdAt: string;
@@ -604,6 +608,13 @@ function aiLabel(status: string) {
   return "待验真";
 }
 
+function credibilityLabel(label: string) {
+  if (label === "high") return "高";
+  if (label === "medium") return "中";
+  if (label === "low") return "低";
+  return "待评估";
+}
+
 function bountyStatusLabel(status: string) {
   if (status === "active") return "待接单";
   if (status === "accepted") return "验证中";
@@ -800,6 +811,9 @@ function DetailView({
                 <div className="comment-meta">
                   <span className="ai-badge mini" data-status={comment.aiVerified}>
                     {aiLabel(comment.aiVerified)}
+                  </span>
+                  <span className="credibility-badge" data-level={comment.credibilityLabel} title={comment.credibilityReason}>
+                    可信度 {comment.credibilityScore}% · {credibilityLabel(comment.credibilityLabel)}
                   </span>
                   {comment.consumedCoins > 0 && <span>消耗{comment.consumedCoins}币</span>}
                   <span>{comment.receiptImageUrl ? "消费截图已提交" : "无消费截图"}</span>

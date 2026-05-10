@@ -162,6 +162,10 @@ function serializeComment(comment: CommentWithAuthor) {
     content: comment.content,
     status: comment.status,
     aiVerified: comment.aiVerified,
+    credibilityScore: comment.credibilityScore,
+    credibilityLabel: comment.credibilityLabel,
+    credibilityReason: comment.credibilityReason,
+    credibilityModel: comment.credibilityModel,
     consumedCoins: comment.consumedCoins,
     receiptImageUrl: comment.receiptImageUrl,
     createdAt: comment.createdAt,
@@ -336,6 +340,10 @@ async function ensureDemoShowcase(user: User, merchantId?: string | null) {
         update: {
           content: item.comment,
           aiVerified: "verified",
+          credibilityScore: 88,
+          credibilityLabel: "high",
+          credibilityReason: "种子评论包含具体消费语境",
+          credibilityModel: "seed",
           consumedCoins: 5
         },
         create: {
@@ -344,6 +352,10 @@ async function ensureDemoShowcase(user: User, merchantId?: string | null) {
           authorId: user.id,
           content: item.comment,
           aiVerified: "verified",
+          credibilityScore: 88,
+          credibilityLabel: "high",
+          credibilityReason: "种子评论包含具体消费语境",
+          credibilityModel: "seed",
           consumedCoins: 5
         }
       });
@@ -821,7 +833,9 @@ api.post(
       throw apiError(400, "信用币不足", "INSUFFICIENT_COINS");
     }
     
-    const aiVerified = await verifyContent(content);
+    const aiResult = await aiDetector.analyzeComment(content);
+    const aiVerified = aiResult.result;
+    const credibility = aiResult.credibility ?? await aiDetector.assessCommentCredibility(content, aiResult);
     
     const comment = await prisma.$transaction(async (tx) => {
       if (cost > 0) {
@@ -848,7 +862,11 @@ api.post(
           content,
           receiptImageUrl,
           consumedCoins: cost,
-          aiVerified
+          aiVerified,
+          credibilityScore: credibility.score,
+          credibilityLabel: credibility.label,
+          credibilityReason: credibility.reason,
+          credibilityModel: credibility.model
         },
         include: { author: true }
       });
