@@ -32,6 +32,9 @@ type Post = {
   commentCount: number;
   status: string;
   aiVerified: string;
+  postType?: "recommend" | "avoid";
+  isBountyRecord?: boolean;
+  merchantId?: string;
   createdAt: string;
   updatedAt: string;
   author: User | null;
@@ -83,7 +86,30 @@ type Bounty = {
   acceptor?: User | null;
 };
 
-type View = "home" | "detail" | "publish" | "mine" | "login" | "register" | "bounty" | "bounty-publish" | "bounty-detail" | "credit" | "merchant" | "merchant-apply";
+type View = "home" | "detail" | "publish" | "mine" | "login" | "register" | "bounty" | "bounty-publish" | "bounty-detail" | "credit" | "merchant" | "merchant-apply" | "map" | "ranking" | "merchant-detail";
+
+type Merchant = {
+  id: string;
+  userId: string;
+  businessName: string;
+  businessAddress: string;
+  status: string;
+  latitude?: number;
+  longitude?: number;
+  mapIcon?: string;
+  createdAt: string;
+  updatedAt: string;
+  user?: User;
+};
+
+type WeeklyRanking = {
+  id: string;
+  rank: number;
+  rankType: string;
+  score: number;
+  merchant?: Merchant;
+  user?: User;
+};
 
 const apiBase = "/api";
 
@@ -126,6 +152,14 @@ function App() {
   const [imageDataUrl, setImageDataUrl] = useState("");
   const [receiptDataUrl, setReceiptDataUrl] = useState("");
   const [message, setMessage] = useState("");
+  const [postFilter, setPostFilter] = useState<"all" | "recommend" | "avoid">("all");
+  const [merchants, setMerchants] = useState<Merchant[]>([]);
+  const [selectedMerchant, setSelectedMerchant] = useState<Merchant | null>(null);
+  const [merchantPosts, setMerchantPosts] = useState<Post[]>([]);
+  const [merchantBounties, setMerchantBounties] = useState<Bounty[]>([]);
+  const [merchantPhotos, setMerchantPhotos] = useState<any[]>([]);
+  const [rankings, setRankings] = useState<WeeklyRanking[]>([]);
+  const [rankingTab, setRankingTab] = useState<"popularity" | "credit">("popularity");
 
   const myPosts = useMemo(() => posts.filter((post) => post.authorId === user?.id), [posts, user]);
   const myBounties = useMemo(() => bounties.filter((b) => b.publisherId === user?.id || b.acceptorId === user?.id), [bounties, user]);
@@ -139,10 +173,37 @@ function App() {
     window.setTimeout(() => setMessage((current) => (current === nextMessage ? "" : current)), 2200);
   }
 
-  async function loadPosts(nextQuery = query) {
-    const path = nextQuery ? `/posts?q=${encodeURIComponent(nextQuery)}` : "/posts";
+  async function loadPosts(nextQuery = query, nextPostFilter = postFilter) {
+    let path = "/posts";
+    const params = new URLSearchParams();
+    if (nextQuery) params.set("q", nextQuery);
+    if (nextPostFilter !== "all") params.set("postType", nextPostFilter);
+    if (params.toString()) path += "?" + params.toString();
     const data = await api<{ posts: Post[] }>(path);
     setPosts(data.posts);
+  }
+
+  async function loadMerchants() {
+    const data = await api<{ merchants: Merchant[] }>("/merchants");
+    setMerchants(data.merchants);
+  }
+
+  async function loadMerchantDetail(merchantId: string) {
+    const [merchantData, postsData, bountiesData, photosData] = await Promise.all([
+      api<{ merchant: Merchant }>(`/merchants/${merchantId}`),
+      api<{ posts: Post[] }>(`/merchants/${merchantId}/posts`),
+      api<{ bounties: Bounty[] }>(`/merchants/${merchantId}/bounties`),
+      api<{ photos: any[] }>(`/merchants/${merchantId}/photos`)
+    ]);
+    setSelectedMerchant(merchantData.merchant);
+    setMerchantPosts(postsData.posts);
+    setMerchantBounties(bountiesData.bounties);
+    setMerchantPhotos(photosData.photos);
+  }
+
+  async function loadRankings() {
+    const data = await api<{ rankings: WeeklyRanking[] }>("/rankings/weekly");
+    setRankings(data.rankings);
   }
 
   async function loadBounties() {
@@ -271,8 +332,10 @@ function App() {
           title: values.title,
           content: values.content,
           merchantName: values.merchantName,
+          merchantId: values.merchantId || null,
+          postType: values.postType || "recommend",
           tags: String(values.tags || "")
-            .split(/[，,\s]+/)
+            .split(/[，,\\s]+/)
             .filter(Boolean),
           imageUrls: [imageUrl]
         })
@@ -451,6 +514,7 @@ function App() {
   useEffect(() => {
     loadPosts().catch((error) => flash((error as Error).message));
     loadBounties().catch(() => {});
+    loadMerchants().catch(() => {});
   }, []);
 
   useEffect(() => {
@@ -472,6 +536,12 @@ function App() {
     }
   }, [view, token]);
 
+  useEffect(() => {
+    if (view === "ranking") {
+      loadRankings().catch(() => {});
+    }
+  }, [view]);
+
   return (
     <main className="phone">
       {message ? <div className="toast">{message}</div> : null}
@@ -481,7 +551,12 @@ function App() {
           user={user}
           query={query}
           posts={posts}
+          postFilter={postFilter}
           onSearch={handleSearch}
+          onFilterChange={(filter) => {
+            setPostFilter(filter);
+            loadPosts(query, filter);
+          }}
           onGo={setView}
           onOpenPost={openPost}
         />
@@ -499,6 +574,10 @@ function App() {
           onDeletePost={deletePost}
           receiptDataUrl={receiptDataUrl}
           onPickReceipt={async (file) => setReceiptDataUrl(file ? await readFileAsDataUrl(file) : "")}
+          onOpenMerchant={selectedPost.merchantId ? (merchantId) => {
+            loadMerchantDetail(merchantId);
+            setView("merchant-detail");
+          } : undefined}
         />
       ) : null}
       
@@ -507,6 +586,7 @@ function App() {
           imageDataUrl={imageDataUrl}
           onPickImage={async (file) => setImageDataUrl(file ? await readFileAsDataUrl(file) : "")}
           onCreatePost={createPost}
+          merchants={merchants}
         />
       ) : null}
       
@@ -539,7 +619,7 @@ function App() {
       ) : null}
       
       {view === "bounty-publish" ? (
-        <BountyPublishView onCreateBounty={publishBounty} onGo={setView} />
+        <BountyPublishView onCreateBounty={publishBounty} onGo={setView} merchants={merchants} />
       ) : null}
       
       {view === "bounty-detail" && selectedBounty ? (
@@ -576,6 +656,38 @@ function App() {
         <MerchantApplyView onApply={applyMerchant} onGo={setView} />
       ) : null}
       
+      {view === "map" ? (
+        <MapView merchants={merchants} onGo={setView} onOpenMerchant={(merchantId) => {
+          loadMerchantDetail(merchantId);
+          setView("merchant-detail");
+        }} />
+      ) : null}
+      
+      {view === "ranking" ? (
+        <RankingView
+          rankings={rankings}
+          rankingTab={rankingTab}
+          onTabChange={setRankingTab}
+          onGo={setView}
+          onOpenMerchant={(merchantId) => {
+            loadMerchantDetail(merchantId);
+            setView("merchant-detail");
+          }}
+        />
+      ) : null}
+      
+      {view === "merchant-detail" && selectedMerchant ? (
+        <MerchantDetailView
+          merchant={selectedMerchant}
+          posts={merchantPosts}
+          bounties={merchantBounties}
+          photos={merchantPhotos}
+          onGo={setView}
+          onOpenPost={openPost}
+          onOpenBounty={openBounty}
+        />
+      ) : null}
+      
       <Tabbar view={view} user={user} onGo={setView} />
     </main>
   );
@@ -585,14 +697,18 @@ function HomeView({
   user,
   query,
   posts,
+  postFilter,
   onSearch,
+  onFilterChange,
   onGo,
   onOpenPost
 }: {
   user: User | null;
   query: string;
   posts: Post[];
+  postFilter: "all" | "recommend" | "avoid";
   onSearch: (event: FormEvent<HTMLFormElement>) => void;
+  onFilterChange: (filter: "all" | "recommend" | "avoid") => void;
   onGo: (view: View) => void;
   onOpenPost: (id: string) => void;
 }) {
@@ -616,6 +732,26 @@ function HomeView({
         <input name="q" defaultValue={query} placeholder="搜索帖子、商家或标签" />
         <button type="submit">搜索</button>
       </form>
+      <section className="tabs">
+        <button 
+          className={postFilter === "all" ? "active" : ""} 
+          onClick={() => onFilterChange("all")}
+        >
+          全部
+        </button>
+        <button 
+          className={postFilter === "recommend" ? "active" : ""} 
+          onClick={() => onFilterChange("recommend")}
+        >
+          推荐
+        </button>
+        <button 
+          className={postFilter === "avoid" ? "active" : ""} 
+          onClick={() => onFilterChange("avoid")}
+        >
+          避雷
+        </button>
+      </section>
       <section className="feed">
         {posts.length ? posts.map((post) => <PostCard key={post.id} post={post} onOpenPost={onOpenPost} />) : <Empty />}
       </section>
@@ -672,7 +808,8 @@ function DetailView({
   onDeleteComment,
   onDeletePost,
   receiptDataUrl,
-  onPickReceipt
+  onPickReceipt,
+  onOpenMerchant
 }: {
   user: User | null;
   post: Post;
@@ -684,6 +821,7 @@ function DetailView({
   onDeletePost: (id: string) => void;
   receiptDataUrl: string;
   onPickReceipt: (file: File | undefined) => void;
+  onOpenMerchant?: (merchantId: string) => void;
 }) {
   const needReceipt = user?.level === "L1";
   
@@ -702,7 +840,15 @@ function DetailView({
                 <strong>{post.author?.nickname || "匿名用户"}</strong>
                 <span className="level-tag">{post.author?.level}</span>
               </div>
-              <p>{post.merchantName || "未关联商家"}</p>
+              {post.merchantName && (
+                <p 
+                  className={post.merchantId ? "merchant-link" : ""}
+                  onClick={post.merchantId && onOpenMerchant ? () => onOpenMerchant(post.merchantId!) : undefined}
+                >
+                  {post.postType === "recommend" ? "👍 推荐: " : post.postType === "avoid" ? "⚠️ 避雷: " : ""}
+                  {post.merchantName}
+                </p>
+              )}
             </div>
           </div>
           <h1>{post.title}</h1>
@@ -766,14 +912,17 @@ function DetailView({
 function PublishView({
   imageDataUrl,
   onPickImage,
-  onCreatePost
+  onCreatePost,
+  merchants
 }: {
   imageDataUrl: string;
   onPickImage: (file: File | undefined) => void;
   onCreatePost: (event: FormEvent<HTMLFormElement>) => void;
+  merchants: Merchant[];
 }) {
   return (
     <section className="panel">
+      <button className="back" onClick={() => history.back()}>← 返回</button>
       <h1>发布帖子</h1>
       <form className="form" onSubmit={onCreatePost}>
         <label>
@@ -790,8 +939,26 @@ function PublishView({
           <textarea name="content" required />
         </label>
         <label>
+          帖子类型
+          <select name="postType" defaultValue="recommend">
+            <option value="recommend">👍 推荐</option>
+            <option value="avoid">⚠️ 避雷</option>
+          </select>
+        </label>
+        <label>
+          关联商家
+          <select name="merchantId" defaultValue="">
+            <option value="">不关联商家</option>
+            {merchants.map((merchant) => (
+              <option key={merchant.id} value={merchant.id}>
+                {merchant.businessName}
+              </option>
+            ))}
+          </select>
+        </label>
+        <label>
           商家名称
-          <input name="merchantName" />
+          <input name="merchantName" placeholder="输入商家名称" />
         </label>
         <label>
           标签
@@ -993,16 +1160,29 @@ function BountyView({
 
 function BountyPublishView({
   onCreateBounty,
-  onGo
+  onGo,
+  merchants
 }: {
   onCreateBounty: (event: FormEvent<HTMLFormElement>) => void;
   onGo: (view: View) => void;
+  merchants: Merchant[];
 }) {
   return (
     <section className="panel">
       <button className="back" onClick={() => onGo("bounty")}>← 返回</button>
       <h1>发布悬赏</h1>
       <form className="form" onSubmit={onCreateBounty}>
+        <label>
+          关联商家
+          <select name="merchantId" defaultValue="">
+            <option value="">不关联商家</option>
+            {merchants.map((merchant) => (
+              <option key={merchant.id} value={merchant.id}>
+                {merchant.businessName}
+              </option>
+            ))}
+          </select>
+        </label>
         <label>
           商家名称
           <input name="merchantName" required />
@@ -1308,6 +1488,9 @@ function PostCard({ post, onOpenPost }: { post: Post; onOpenPost: (id: string) =
     <article className="post-card" onClick={() => onOpenPost(post.id)}>
       <img className="post-cover" src={post.coverImageUrl} alt="" />
       <div className="post-body">
+        <div className="post-type-badge">
+          {post.postType === "recommend" ? "👍 推荐" : post.postType === "avoid" ? "⚠️ 避雷" : ""}
+        </div>
         <h3>{post.title}</h3>
         <p>{post.content}</p>
         <div className="meta">
@@ -1331,6 +1514,12 @@ function Tabbar({ view, user, onGo }: { view: View; user: User | null; onGo: (vi
       <button className={view === "home" ? "active" : ""} onClick={() => onGo("home")}>
         首页
       </button>
+      <button className={view === "map" ? "active" : ""} onClick={() => onGo("map")}>
+        地图
+      </button>
+      <button className={view === "ranking" ? "active" : ""} onClick={() => onGo("ranking")}>
+        榜单
+      </button>
       <button className={view.startsWith("bounty") ? "active" : ""} onClick={() => onGo("bounty")}>
         悬赏
       </button>
@@ -1341,6 +1530,248 @@ function Tabbar({ view, user, onGo }: { view: View; user: User | null; onGo: (vi
         我的
       </button>
     </nav>
+  );
+}
+
+function MapView({
+  merchants,
+  onGo,
+  onOpenMerchant
+}: {
+  merchants: Merchant[];
+  onGo: (view: View) => void;
+  onOpenMerchant: (merchantId: string) => void;
+}) {
+  return (
+    <>
+      <header className="topbar">
+        <div>
+          <span className="eyebrow">地图</span>
+          <h1>附近商家</h1>
+        </div>
+      </header>
+      <section className="map-container">
+        <div className="map-placeholder">
+          <div className="map-grid">
+            {merchants.map((merchant) => (
+              <div 
+                key={merchant.id} 
+                className="map-marker"
+                onClick={() => onOpenMerchant(merchant.id)}
+                style={{
+                  left: `${50 + (merchant.longitude || 0) * 3}%`,
+                  top: `${50 + (merchant.latitude || 0) * 2}%`
+                }}
+              >
+                <span className="marker-icon">{merchant.mapIcon || "🏪"}</span>
+                <span className="marker-name">{merchant.businessName}</span>
+              </div>
+            ))}
+          </div>
+        </div>
+      </section>
+      <section className="merchant-list">
+        <h2>所有商家</h2>
+        {merchants.length ? (
+          merchants.map((merchant) => (
+            <div 
+              key={merchant.id} 
+              className="merchant-item"
+              onClick={() => onOpenMerchant(merchant.id)}
+            >
+              <span className="merchant-icon">{merchant.mapIcon || "🏪"}</span>
+              <div className="merchant-info">
+                <strong>{merchant.businessName}</strong>
+                <p>{merchant.businessAddress}</p>
+              </div>
+            </div>
+          ))
+        ) : (
+          <Empty text="暂无商家" />
+        )}
+      </section>
+    </>
+  );
+}
+
+function RankingView({
+  rankings,
+  rankingTab,
+  onTabChange,
+  onGo,
+  onOpenMerchant
+}: {
+  rankings: WeeklyRanking[];
+  rankingTab: "popularity" | "credit";
+  onTabChange: (tab: "popularity" | "credit") => void;
+  onGo: (view: View) => void;
+  onOpenMerchant: (merchantId: string) => void;
+}) {
+  return (
+    <>
+      <header className="topbar">
+        <div>
+          <span className="eyebrow">榜单</span>
+          <h1>每周排行</h1>
+        </div>
+      </header>
+      <section className="tabs">
+        <button 
+          className={rankingTab === "popularity" ? "active" : ""} 
+          onClick={() => onTabChange("popularity")}
+        >
+          热度榜
+        </button>
+        <button 
+          className={rankingTab === "credit" ? "active" : ""} 
+          onClick={() => onTabChange("credit")}
+        >
+          信用榜
+        </button>
+      </section>
+      <section className="ranking-list">
+        {rankings.length ? (
+          rankings.map((item, index) => (
+            <div 
+              key={item.id} 
+              className="ranking-item"
+              onClick={item.merchant ? () => onOpenMerchant(item.merchant.id) : undefined}
+            >
+              <span className={`rank-number rank-${index + 1}`}>{index + 1}</span>
+              {item.merchant && (
+                <>
+                  <span className="merchant-icon">{item.merchant.mapIcon || "🏪"}</span>
+                  <div className="ranking-info">
+                    <strong>{item.merchant.businessName}</strong>
+                    <p>得分: {item.score}</p>
+                  </div>
+                </>
+              )}
+            </div>
+          ))
+        ) : (
+          <Empty text="暂无排行数据" />
+        )}
+      </section>
+    </>
+  );
+}
+
+function MerchantDetailView({
+  merchant,
+  posts,
+  bounties,
+  photos,
+  onGo,
+  onOpenPost,
+  onOpenBounty
+}: {
+  merchant: Merchant;
+  posts: Post[];
+  bounties: Bounty[];
+  photos: any[];
+  onGo: (view: View) => void;
+  onOpenPost: (id: string) => void;
+  onOpenBounty: (id: string) => void;
+}) {
+  const [activeTab, setActiveTab] = useState<"posts" | "bounties" | "photos">("posts");
+
+  return (
+    <>
+      <button className="back" onClick={() => onGo("home")}>← 返回</button>
+      <section className="panel merchant-header">
+        <div className="merchant-icon-large">{merchant.mapIcon || "🏪"}</div>
+        <h1>{merchant.businessName}</h1>
+        <p>{merchant.businessAddress}</p>
+        <div className="merchant-status">
+          <span className="status-badge approved">已认证</span>
+        </div>
+      </section>
+      
+      <section className="tabs">
+        <button 
+          className={activeTab === "posts" ? "active" : ""} 
+          onClick={() => setActiveTab("posts")}
+        >
+          相关帖子 ({posts.length})
+        </button>
+        <button 
+          className={activeTab === "bounties" ? "active" : ""} 
+          onClick={() => setActiveTab("bounties")}
+        >
+          悬赏记录 ({bounties.length})
+        </button>
+        <button 
+          className={activeTab === "photos" ? "active" : ""} 
+          onClick={() => setActiveTab("photos")}
+        >
+          商家照片 ({photos.length})
+        </button>
+      </section>
+      
+      {activeTab === "posts" && (
+        <section className="feed">
+          {posts.length ? (
+            posts.map((post) => (
+              <PostCard key={post.id} post={post} onOpenPost={onOpenPost} />
+            ))
+          ) : (
+            <Empty text="暂无相关帖子" />
+          )}
+        </section>
+      )}
+      
+      {activeTab === "bounties" && (
+        <section className="feed">
+          {bounties.length ? (
+            bounties.map((bounty) => (
+              <div 
+                key={bounty.id} 
+                className="bounty-card" 
+                onClick={() => onOpenBounty(bounty.id)}
+              >
+                <div className="bounty-header">
+                  <div className="bounty-merchant">
+                    <h3>{bounty.merchantName}</h3>
+                    <p>{bounty.merchantAddress}</p>
+                  </div>
+                  <div className="bounty-reward">
+                    <span className="reward-amount">{bounty.rewardCoins}</span>
+                    <span className="reward-label">信用币</span>
+                  </div>
+                </div>
+                <p className="bounty-desc">{bounty.description}</p>
+                <div className="bounty-footer">
+                  <span className={`status-tag ${bounty.status}`}>
+                    {bounty.status === "active" ? "可接取" : bounty.status === "accepted" ? "进行中" : bounty.status === "completed" ? "已完成" : "已失败"}
+                  </span>
+                  <span>{new Date(bounty.createdAt).toLocaleDateString()}</span>
+                </div>
+              </div>
+            ))
+          ) : (
+            <Empty text="暂无悬赏记录" />
+          )}
+        </section>
+      )}
+      
+      {activeTab === "photos" && (
+        <section className="photo-gallery">
+          {photos.length ? (
+            photos.map((photo) => (
+              <div key={photo.id} className="photo-item">
+                <img src={photo.url} alt="" />
+                <span className="ai-badge mini" data-status={photo.aiVerified}>
+                  {photo.aiVerified === "verified" ? "✓ 已验真" : "待验真"}
+                </span>
+              </div>
+            ))
+          ) : (
+            <Empty text="暂无商家照片" />
+          )}
+        </section>
+      )}
+    </>
   );
 }
 

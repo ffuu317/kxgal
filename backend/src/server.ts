@@ -3,8 +3,7 @@ import { createReadStream, existsSync } from "node:fs";
 import { dirname, extname, join, resolve } from "node:path";
 import { randomBytes, scryptSync, timingSafeEqual } from "node:crypto";
 import { fileURLToPath } from "node:url";
-import { PrismaClient } from "@prisma/client";
-import type { Prisma, User } from "@prisma/client";
+import { PrismaClient, User } from "@prisma/client";
 import { aiDetector } from "./ai-detector";
 
 const __dirname = dirname(fileURLToPath(import.meta.url));
@@ -30,7 +29,6 @@ const demoImage =
 type ApiError = Error & { status?: number; code?: string };
 type PostWithAuthor = Awaited<ReturnType<typeof findPostWithAuthor>>;
 type CommentWithAuthor = Awaited<ReturnType<typeof findCommentsWithAuthor>>[number];
-type DbClient = PrismaClient | Prisma.TransactionClient;
 
 function asyncRoute(handler: (req: Request, res: Response, next: NextFunction) => Promise<void>) {
   return (req: Request, res: Response, next: NextFunction) => {
@@ -120,7 +118,7 @@ async function requireUser(req: Request) {
   return user;
 }
 
-function serializePost(post: NonNullable<PostWithAuthor>, likedByMe = false) {
+function serializePost(post: any, likedByMe = false) {
   return {
     id: post.id,
     authorId: post.authorId,
@@ -134,6 +132,9 @@ function serializePost(post: NonNullable<PostWithAuthor>, likedByMe = false) {
     commentCount: post.commentCount,
     status: post.status,
     aiVerified: post.aiVerified,
+    postType: post.postType || "recommend",
+    isBountyRecord: post.isBountyRecord || false,
+    merchantId: post.merchantId || null,
     createdAt: post.createdAt,
     updatedAt: post.updatedAt,
     author: publicUser(post.author),
@@ -154,6 +155,22 @@ function serializeComment(comment: CommentWithAuthor) {
     createdAt: comment.createdAt,
     updatedAt: comment.updatedAt,
     author: publicUser(comment.author)
+  };
+}
+
+function serializeMerchant(merchant: any) {
+  return {
+    id: merchant.id,
+    userId: merchant.userId,
+    businessName: merchant.businessName,
+    businessAddress: merchant.businessAddress,
+    status: merchant.status,
+    latitude: merchant.latitude,
+    longitude: merchant.longitude,
+    mapIcon: merchant.mapIcon || "🏠",
+    createdAt: merchant.createdAt,
+    updatedAt: merchant.updatedAt,
+    user: publicUser(merchant.user)
   };
 }
 
@@ -188,15 +205,20 @@ function getCommentCost(level: string): number {
   }
 }
 
-async function createTransaction(userId: string, type: string, amount: number, reason: string, relatedId?: string, db: DbClient = prisma) {
-  const user = await db.user.findUnique({ where: { id: userId } });
+async function updateUserLevel(userId: string, coins: number) {
+  const newLevel = getLevelByCoins(coins);
+  await prisma.user.update({ where: { id: userId }, data: { level: newLevel } });
+  return newLevel;
+}
+
+async function createTransaction(userId: string, type: string, amount: number, reason: string, relatedId?: string) {
+  const user = await prisma.user.findUnique({ where: { id: userId } });
   if (!user) throw apiError(404, "用户不存在");
   
   const balanceBefore = user.creditCoin;
   const balanceAfter = balanceBefore + amount;
-  const newLevel = getLevelByCoins(balanceAfter);
   
-  await db.creditTransaction.create({
+  await prisma.creditTransaction.create({
     data: {
       id: id("tx"),
       userId,
@@ -209,7 +231,9 @@ async function createTransaction(userId: string, type: string, amount: number, r
     }
   });
   
-  await db.user.update({
+  const newLevel = await updateUserLevel(userId, balanceAfter);
+  
+  await prisma.user.update({
     where: { id: userId },
     data: { creditCoin: balanceAfter, level: newLevel }
   });
@@ -244,12 +268,41 @@ async function ensureSeedData() {
     }
   });
   
+  const user2 = await prisma.user.create({
+    data: {
+      id: "u_demo2",
+      phone: "13900000000",
+      passwordHash: hashPassword("123456"),
+      nickname: "美食探索者",
+      avatarUrl: defaultAvatar,
+      bio: "探店达人，分享真实评价。",
+      level: "L1",
+      creditCoin: 60
+    }
+  });
+  
   const merchant = await prisma.merchant.create({
     data: {
       id: "m_demo",
       userId: user.id,
       businessName: "老巷牛肉面",
       businessAddress: "北京市朝阳区某某街道123号",
+      latitude: 39.9042,
+      longitude: 116.4074,
+      mapIcon: "🍜",
+      status: "approved"
+    }
+  });
+  
+  const merchant2 = await prisma.merchant.create({
+    data: {
+      id: "m_demo2",
+      userId: user2.id,
+      businessName: "京城火锅店",
+      businessAddress: "北京市海淀区某某街道456号",
+      latitude: 39.9042,
+      longitude: 116.5074,
+      mapIcon: "🔥",
       status: "approved"
     }
   });
@@ -268,9 +321,29 @@ async function ensureSeedData() {
       coverImageUrl: demoImage,
       imageUrlsJson: JSON.stringify([demoImage]),
       merchantName: "老巷牛肉面",
+      merchantId: merchant.id,
+      postType: "recommend",
       tagsJson: JSON.stringify(["牛肉面", "午餐", "实拍"]),
       likeCount: 1,
       commentCount: 1,
+      aiVerified: "verified"
+    }
+  });
+  
+  const post2 = await prisma.post.create({
+    data: {
+      id: "p_demo2",
+      authorId: user.id,
+      title: "这家火锅店需要避雷",
+      content: "价格贵，分量少，服务态度差。不推荐去。",
+      coverImageUrl: demoImage,
+      imageUrlsJson: JSON.stringify([demoImage]),
+      merchantName: "京城火锅店",
+      merchantId: merchant2.id,
+      postType: "avoid",
+      tagsJson: JSON.stringify(["火锅", "避雷", "差评"]),
+      likeCount: 0,
+      commentCount: 0,
       aiVerified: "verified"
     }
   });
@@ -314,6 +387,30 @@ async function ensureSeedData() {
       deadline: new Date(Date.now() + 7 * 24 * 60 * 60 * 1000)
     }
   });
+  
+  await prisma.merchantPhoto.create({
+    data: {
+      id: "mp_demo",
+      merchantId: merchant.id,
+      photoType: "kitchen",
+      url: demoImage,
+      aiVerified: "verified"
+    }
+  });
+  
+  const now = new Date();
+  const weekNumber = Math.ceil((now.getDate() - 1) / 7);
+  await prisma.weeklyRanking.create({
+    data: {
+      id: "wr_demo",
+      weekNumber: weekNumber,
+      year: now.getFullYear(),
+      rankType: "popularity",
+      merchantId: merchant.id,
+      rank: 1,
+      score: 100
+    }
+  });
 }
 
 const app = express();
@@ -338,15 +435,9 @@ api.post(
     const phone = requireString(req.body, "phone", 6);
     const password = requireString(req.body, "password", 6);
     const nickname = requireString(req.body, "nickname");
-    const fingerprintHash = typeof req.body.fingerprintHash === "string" ? req.body.fingerprintHash : "";
     
     const existing = await prisma.user.findUnique({ where: { phone } });
     if (existing) throw apiError(409, "手机号已注册", "PHONE_EXISTS");
-    
-    if (fingerprintHash) {
-      const fingerprintExists = await prisma.user.findFirst({ where: { fingerprintHash } });
-      if (fingerprintExists) throw apiError(409, "该指纹已绑定其他账号", "FINGERPRINT_EXISTS");
-    }
     
     const user = await prisma.user.create({
       data: {
@@ -355,7 +446,6 @@ api.post(
         passwordHash: hashPassword(password),
         nickname,
         avatarUrl: defaultAvatar,
-        fingerprintHash: fingerprintHash || null,
         level: "L0",
         creditCoin: 0
       }
@@ -531,8 +621,8 @@ api.get(
   "/users/me/merchant",
   asyncRoute(async (req, res) => {
     const user = await requireUser(req);
-    const merchant = await prisma.merchant.findUnique({ where: { userId: user.id } });
-    res.json({ merchant });
+    const merchant = await prisma.merchant.findUnique({ where: { userId: user.id }, include: { user: true } });
+    res.json({ merchant: merchant ? serializeMerchant(merchant) : null });
   })
 );
 
@@ -541,10 +631,12 @@ api.get(
   asyncRoute(async (req, res) => {
     const viewer = await currentUser(req);
     const q = typeof req.query.q === "string" ? req.query.q.trim() : "";
+    const postType = typeof req.query.postType === "string" ? req.query.postType : "all";
     
     const posts = await prisma.post.findMany({
       where: {
         status: "published",
+        ...(postType !== "all" ? { postType: postType } : {}),
         ...(q
           ? {
               OR: [
@@ -582,6 +674,8 @@ api.post(
     const title = requireString(req.body, "title");
     const content = requireString(req.body, "content");
     const imageUrls = Array.isArray(req.body.imageUrls) ? req.body.imageUrls.map(String).filter(Boolean) : [];
+    const postType = typeof req.body.postType === "string" ? req.body.postType : "recommend";
+    const merchantId = typeof req.body.merchantId === "string" ? req.body.merchantId : null;
     
     if (imageUrls.length === 0) throw apiError(400, "至少上传一张图片", "IMAGE_REQUIRED");
     
@@ -597,6 +691,8 @@ api.post(
         coverImageUrl: imageUrls[0],
         imageUrlsJson: JSON.stringify(imageUrls),
         merchantName: typeof req.body.merchantName === "string" ? req.body.merchantName.trim() : "",
+        merchantId,
+        postType,
         tagsJson: JSON.stringify(tags),
         aiVerified
       },
@@ -723,10 +819,10 @@ api.post(
       
       if (aiVerified === "fake") {
         await tx.user.update({ where: { id: user.id }, data: { warningCount: { increment: 1 } } });
-        await createTransaction(user.id, "penalty", -20, "AI检测为水军发言", created.id, tx);
+        await createTransaction(user.id, "penalty", -20, "AI检测为水军发言", created.id);
         
         const updatedUser = await tx.user.findUnique({ where: { id: user.id } });
-        if (updatedUser!.warningCount >= 4) {
+        if (updatedUser && updatedUser.warningCount >= 4) {
           await tx.user.update({ where: { id: user.id }, data: { status: "banned" } });
         }
       }
@@ -857,6 +953,7 @@ api.post(
     const description = requireString(req.body, "description");
     const rewardCoins = typeof req.body.rewardCoins === "number" ? req.body.rewardCoins : 50;
     const deadlineDays = typeof req.body.deadlineDays === "number" ? req.body.deadlineDays : 7;
+    const merchantId = typeof req.body.merchantId === "string" ? req.body.merchantId : null;
     
     const deadline = new Date(Date.now() + deadlineDays * 24 * 60 * 60 * 1000);
     
@@ -869,6 +966,7 @@ api.post(
         description,
         rewardCoins,
         deadline,
+        merchantId,
         aiVerified: "verified"
       },
       include: { publisher: true }
@@ -923,7 +1021,26 @@ api.post(
       });
       
       if (aiVerified === "verified") {
-        await createTransaction(user.id, "bounty_reward", bounty.rewardCoins, "完成悬赏任务奖励", bounty.id, tx);
+        await createTransaction(user.id, "bounty_reward", bounty.rewardCoins, "完成悬赏任务奖励", bounty.id);
+        
+        if (bounty.merchantId) {
+          await tx.post.create({
+            data: {
+              id: id("p"),
+              authorId: user.id,
+              title: "悬赏探店: " + bounty.description.substring(0, 30),
+              content: bounty.description,
+              coverImageUrl: imageUrls[0],
+              imageUrlsJson: JSON.stringify(imageUrls),
+              merchantName: bounty.merchantName,
+              merchantId: bounty.merchantId,
+              isBountyRecord: true,
+              tagsJson: JSON.stringify(["悬赏", "探店"]),
+              aiVerified
+            }
+          });
+        }
+        
         return { bounty: updatedBounty, success: true, reward: bounty.rewardCoins };
       } else {
         return { bounty: updatedBounty, success: false, reward: 0 };
@@ -940,6 +1057,9 @@ api.post(
     const user = await requireUser(req);
     
     if (!user.isMerchant) throw apiError(403, "只有商家用户可以上传后厨图片", "NOT_MERCHANT");
+    
+    const merchant = await prisma.merchant.findUnique({ where: { userId: user.id } });
+    if (!merchant) throw apiError(404, "商家信息不存在", "NOT_FOUND");
     
     const imageUrls = Array.isArray(req.body.imageUrls) ? req.body.imageUrls.map(String).filter(Boolean) : [];
     if (imageUrls.length === 0) throw apiError(400, "至少上传一张图片", "IMAGE_REQUIRED");
@@ -960,8 +1080,22 @@ api.post(
     
     const aiVerified = await verifyImage(imageUrls[0]);
     
+    await prisma.merchantPhoto.create({
+      data: {
+        id: id("mp"),
+        merchantId: merchant.id,
+        photoType: "kitchen",
+        url: imageUrls[0],
+        aiVerified
+      }
+    });
+    
     if (aiVerified === "verified") {
       await createTransaction(user.id, "kitchen_reward", 50, "后厨图片上传奖励");
+      await prisma.merchant.update({
+        where: { id: merchant.id },
+        data: { lastKitchenUpload: now }
+      });
     }
     
     res.json({ success: aiVerified === "verified", message: aiVerified === "verified" ? "上传成功，奖励50信用币" : "图片检测未通过" });
@@ -975,7 +1109,21 @@ api.get(
       where: { status: "approved" },
       include: { user: true }
     });
-    res.json({ merchants });
+    res.json({ merchants: merchants.map(serializeMerchant) });
+  })
+);
+
+api.get(
+  "/merchants/:id",
+  asyncRoute(async (req, res) => {
+    const merchant = await prisma.merchant.findFirst({
+      where: { id: routeParam(req, "id") },
+      include: { user: true }
+    });
+    
+    if (!merchant) throw apiError(404, "商家不存在", "NOT_FOUND");
+    
+    res.json({ merchant: serializeMerchant(merchant) });
   })
 );
 
@@ -988,6 +1136,88 @@ api.get(
       orderBy: { createdAt: "desc" }
     });
     res.json({ bounties });
+  })
+);
+
+api.get(
+  "/merchants/:id/posts",
+  asyncRoute(async (req, res) => {
+    const merchantId = routeParam(req, "id");
+    const viewer = await currentUser(req);
+    
+    const posts = await prisma.post.findMany({
+      where: { merchantId: merchantId, status: "published" },
+      include: { author: true },
+      orderBy: { createdAt: "desc" }
+    });
+    
+    const likedIds = viewer
+      ? new Set(
+          (
+            await prisma.postLike.findMany({
+              where: { userId: viewer.id, postId: { in: posts.map((post) => post.id) } },
+              select: { postId: true }
+            })
+          ).map((like) => like.postId)
+        )
+      : new Set<string>();
+    
+    res.json({ posts: posts.map((post) => serializePost(post, likedIds.has(post.id))) });
+  })
+);
+
+api.get(
+  "/merchants/:id/photos",
+  asyncRoute(async (req, res) => {
+    const photos = await prisma.merchantPhoto.findMany({
+      where: { merchantId: routeParam(req, "id") },
+      orderBy: { uploadedAt: "desc" }
+    });
+    res.json({ photos });
+  })
+);
+
+api.get(
+  "/map/merchants",
+  asyncRoute(async (req, res) => {
+    const merchants = await prisma.merchant.findMany({
+      where: {
+        status: "approved",
+        latitude: { not: null },
+        longitude: { not: null }
+      },
+      include: { user: true }
+    });
+    res.json({ merchants: merchants.map(serializeMerchant) });
+  })
+);
+
+api.get(
+  "/rankings/weekly",
+  asyncRoute(async (req, res) => {
+    const now = new Date();
+    const weekNumber = Math.ceil((now.getDate() - 1) / 7);
+    const targetWeek = typeof req.query.week === "string" ? parseInt(req.query.week, 10) : weekNumber;
+    const targetYear = typeof req.query.year === "string" ? parseInt(req.query.year, 10) : now.getFullYear();
+    
+    const rankings = await prisma.weeklyRanking.findMany({
+      where: { weekNumber: targetWeek, year: targetYear },
+      include: { merchant: { include: { user: true } }, user: true },
+      orderBy: { rank: "asc" }
+    });
+    
+    res.json({
+      rankings: rankings.map(r => ({
+        id: r.id,
+        rank: r.rank,
+        rankType: r.rankType,
+        score: r.score,
+        merchant: r.merchant ? serializeMerchant(r.merchant) : null,
+        user: r.user ? publicUser(r.user) : null
+      })),
+      week: targetWeek,
+      year: targetYear
+    });
   })
 );
 
