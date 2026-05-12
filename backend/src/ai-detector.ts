@@ -2,6 +2,8 @@ import axios from "axios";
 
 const HUGGINGFACE_API_URL = "https://api-inference.huggingface.co/models";
 const HUGGINGFACE_API_KEY = process.env.HUGGINGFACE_API_KEY;
+const COMMENT_TRUST_MODEL =
+  process.env.COMMENT_TRUST_MODEL || "twn39/chinese-roberta-wwm-ext-finetune-dianping";
 
 const SPAM_KEYWORDS = [
   "太好了", "非常棒", "超级好吃", "无敌美味", "绝绝子", "YYDS", 
@@ -18,11 +20,22 @@ const SUSPICIOUS_PATTERNS = [
 ];
 
 export type AIVerificationResult = "verified" | "suspicious" | "fake";
+export type CommentCredibilityLabel = "high" | "medium" | "low";
+
+export interface CommentCredibilityResult {
+  score: number;
+  label: CommentCredibilityLabel;
+  reason: string;
+  model: string;
+  modelLabel?: string;
+  modelConfidence?: number;
+}
 
 export interface AIDetectionResult {
   result: AIVerificationResult;
   confidence: number;
   reason?: string;
+  credibility?: CommentCredibilityResult;
 }
 
 const FOOD_KEYWORDS = [
@@ -41,6 +54,102 @@ const ALLOWED_TASKS = [
 
 export class AIDetector {
   private modelCache = new Map<string, number>();
+
+  private toCredibilityLabel(score: number): CommentCredibilityLabel {
+    if (score >= 80) return "high";
+    if (score >= 55) return "medium";
+    return "low";
+  }
+
+  private normalizeScore(score: number) {
+    return Math.max(0, Math.min(100, Math.round(score)));
+  }
+
+  private parseClassificationResponse(data: unknown): Array<{ label: string; score: number }> {
+    if (!Array.isArray(data)) return [];
+    const predictions = Array.isArray(data[0]) ? data[0] : data;
+    return predictions
+      .filter((item): item is { label: string; score: number } => {
+        if (!item || typeof item !== "object") return false;
+        const candidate = item as Record<string, unknown>;
+        return typeof candidate.label === "string" && typeof candidate.score === "number";
+      })
+      .sort((left, right) => right.score - left.score);
+  }
+
+  private localCredibilityScore(text: string, spamResult: AIDetectionResult) {
+    let score = 62;
+    const length = text.trim().length;
+    const hasFoodContext = FOOD_KEYWORDS.some((keyword) => text.includes(keyword));
+    const hasSpecificDetail = [
+      "排队", "价格", "分量", "服务", "环境", "口感", "新鲜", "上菜", "堂食",
+      "外卖", "套餐", "人均", "菜单", "座位", "卫生", "复购", "踩雷"
+    ].some((keyword) => text.includes(keyword));
+
+    if (length >= 30) score += 10;
+    if (length >= 80) score += 8;
+    if (hasFoodContext) score += 8;
+    if (hasSpecificDetail) score += 8;
+    if (spamResult.result === "suspicious") score -= 18;
+    if (spamResult.result === "fake") score -= 40;
+    if (SPAM_KEYWORDS.filter((keyword) => text.includes(keyword)).length >= 3) score -= 12;
+
+    return this.normalizeScore(score);
+  }
+
+  async assessCommentCredibility(text: string, spamResult?: AIDetectionResult): Promise<CommentCredibilityResult> {
+    const baseline = spamResult ?? await this.detectSpamText(text);
+    const fallbackScore = this.localCredibilityScore(text, baseline);
+    const fallbackReason = baseline.reason || "基于评论长度、餐饮细节和刷评特征综合评估";
+
+    if (!HUGGINGFACE_API_KEY) {
+      return {
+        score: fallbackScore,
+        label: this.toCredibilityLabel(fallbackScore),
+        reason: fallbackReason,
+        model: "local-fallback"
+      };
+    }
+
+    try {
+      const response = await axios.post(
+        `${HUGGINGFACE_API_URL}/${COMMENT_TRUST_MODEL}`,
+        { inputs: text, options: { wait_for_model: true } },
+        {
+          headers: {
+            Authorization: `Bearer ${HUGGINGFACE_API_KEY}`,
+            "Content-Type": "application/json",
+          },
+          timeout: 30000,
+        }
+      );
+
+      const predictions = this.parseClassificationResponse(response.data);
+      const topPrediction = predictions[0];
+
+      if (topPrediction) {
+        const modelSignal = 50 + (topPrediction.score - 0.5) * 60;
+        const score = this.normalizeScore(modelSignal * 0.55 + fallbackScore * 0.45);
+        return {
+          score,
+          label: this.toCredibilityLabel(score),
+          reason: `Dianping RoBERTa分类置信度${Math.round(topPrediction.score * 100)}%，${fallbackReason}`,
+          model: COMMENT_TRUST_MODEL,
+          modelLabel: topPrediction.label,
+          modelConfidence: topPrediction.score
+        };
+      }
+    } catch (error) {
+      console.warn("Comment credibility model failed, using fallback:", error);
+    }
+
+    return {
+      score: fallbackScore,
+      label: this.toCredibilityLabel(fallbackScore),
+      reason: fallbackReason,
+      model: "local-fallback"
+    };
+  }
 
   async analyzeBountyContent(description: string, merchantName: string): Promise<AIDetectionResult> {
     const text = description.toLowerCase().trim();
@@ -180,16 +289,19 @@ export class AIDetector {
         }
       );
 
-      if (response.data && Array.isArray(response.data)) {
-        const scores = response.data[0];
-        const labelIndex = scores.indexOf(Math.max(...scores));
-        const labels = ["1 star", "2 stars", "3 stars", "4 stars", "5 stars"];
-        
+      const predictions = this.parseClassificationResponse(response.data);
+      const topPrediction = predictions[0];
+
+      if (topPrediction) {
+        const normalizedLabel = topPrediction.label.toLowerCase();
         let label = "neutral";
-        if (labelIndex <= 1) label = "negative";
-        else if (labelIndex >= 3) label = "positive";
-        
-        return { label, score: scores[labelIndex] };
+        if (normalizedLabel.includes("negative") || normalizedLabel.includes("1") || normalizedLabel.includes("2")) {
+          label = "negative";
+        } else if (normalizedLabel.includes("positive") || normalizedLabel.includes("4") || normalizedLabel.includes("5")) {
+          label = "positive";
+        }
+
+        return { label, score: topPrediction.score };
       }
     } catch (error) {
       console.warn("Hugging Face API failed, using fallback:", error);
@@ -229,16 +341,21 @@ export class AIDetector {
 
   async analyzeComment(comment: string): Promise<AIDetectionResult> {
     const result = await this.detectSpamText(comment);
+    const credibility = await this.assessCommentCredibility(comment, result);
     
     if (result.result === "verified") {
       const sentiment = await this.classifySentiment(comment);
       
       if (sentiment.label === "positive" && sentiment.score > 0.98) {
-        return { result: "suspicious", confidence: 0.75, reason: "极端正面情绪" };
+        return { result: "suspicious", confidence: 0.75, reason: "极端正面情绪", credibility };
+      }
+
+      if (credibility.score < 45) {
+        return { result: "suspicious", confidence: 0.72, reason: credibility.reason, credibility };
       }
     }
     
-    return result;
+    return { ...result, credibility };
   }
 
   async detectImageAuthenticity(imageDataUrl: string): Promise<AIDetectionResult> {
@@ -287,13 +404,7 @@ export class AIDetector {
   }
 
   private fallbackImageDetection(): AIDetectionResult {
-    const random = Math.random();
-    if (random < 0.1) {
-      return { result: "fake", confidence: 0.6, reason: "图片检测未通过" };
-    } else if (random < 0.25) {
-      return { result: "suspicious", confidence: 0.5, reason: "图片需要人工复核" };
-    }
-    return { result: "verified", confidence: 0.85 };
+    return { result: "verified", confidence: 0.85, reason: "本地演示模式自动通过" };
   }
 
   async batchDetect(contents: string[]): Promise<AIDetectionResult[]> {

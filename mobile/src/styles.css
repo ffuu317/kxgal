@@ -157,6 +157,48 @@ p {
   margin: 20px 0;
 }
 
+.value-strip,
+.trust-strip,
+.rule-grid {
+  display: grid;
+  gap: 8px;
+}
+
+.value-strip {
+  grid-template-columns: repeat(3, 1fr);
+  margin: -6px 0 16px;
+  padding: 10px;
+  border: 1px solid #e4e8e5;
+  border-radius: 8px;
+  background: #fff;
+}
+
+.value-strip div,
+.trust-strip div,
+.rule-grid div {
+  min-width: 0;
+}
+
+.value-strip strong,
+.value-strip span,
+.trust-strip span,
+.trust-strip strong,
+.rule-grid strong,
+.rule-grid span {
+  display: block;
+}
+
+.value-strip strong {
+  color: #20302f;
+  font-size: 13px;
+}
+
+.value-strip span {
+  color: #75817e;
+  font-size: 11px;
+  line-height: 1.35;
+}
+
 input,
 textarea {
   width: 100%;
@@ -222,10 +264,25 @@ textarea:focus {
   max-height: 120px;
 }
 
+.inline-receipt {
+  margin-top: 8px;
+  max-width: 180px;
+}
+
 .post-body {
   display: grid;
   gap: 8px;
   padding: 13px;
+}
+
+.card-topline {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 8px;
+  color: #2f7d72;
+  font-size: 12px;
+  font-weight: 800;
 }
 
 .post-body p {
@@ -257,6 +314,29 @@ textarea:focus {
 
 .panel {
   margin-top: 12px;
+}
+
+.compact-panel {
+  padding: 14px;
+}
+
+.section-head {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 12px;
+}
+
+.section-head h2 {
+  margin: 0 0 10px;
+}
+
+.text-link {
+  padding: 4px 0;
+  background: transparent;
+  color: #2f7d72;
+  font-size: 13px;
+  font-weight: 800;
 }
 
 .form {
@@ -364,6 +444,7 @@ label,
 
 .comment-meta {
   display: flex;
+  flex-wrap: wrap;
   gap: 12px;
   margin-top: 4px;
   font-size: 12px;
@@ -384,6 +465,7 @@ label,
   padding: 10px;
   border: 1px dashed #d8dfdc;
   border-radius: 8px;
+  cursor: pointer;
 }
 
 .receipt-upload input {
@@ -450,6 +532,53 @@ label,
   color: #856404;
 }
 
+.credibility-badge {
+  display: inline-flex;
+  align-items: center;
+  min-height: 18px;
+  padding: 2px 8px;
+  border-radius: 999px;
+  background: #edf6f2;
+  color: #2f6f5d;
+  font-size: 10px;
+  font-weight: 700;
+}
+
+.credibility-badge[data-level="medium"] {
+  background: #fff5dc;
+  color: #8a5a00;
+}
+
+.credibility-badge[data-level="low"] {
+  background: #ffe8e1;
+  color: #9b331f;
+}
+
+.trust-strip {
+  grid-template-columns: repeat(3, 1fr);
+  padding: 12px;
+  border: 1px solid #dfe8e5;
+  border-radius: 8px;
+  background: #f8faf9;
+}
+
+.trust-strip span {
+  color: #75817e;
+  font-size: 11px;
+  font-weight: 700;
+}
+
+.trust-strip strong {
+  margin-top: 3px;
+  color: #20302f;
+  font-size: 12px;
+  line-height: 1.25;
+}
+
+.bounty-trust {
+  margin-top: 14px;
+}
+
 .credit-item {
   display: flex;
   align-items: center;
@@ -480,6 +609,7 @@ label,
 
 .user-badges {
   display: flex;
+  flex-wrap: wrap;
   gap: 8px;
   margin: 12px 0;
 }
@@ -530,6 +660,28 @@ label,
 .tabs button.active {
   background: #2f7d72;
   color: #fff;
+}
+
+.rule-grid {
+  grid-template-columns: repeat(3, 1fr);
+}
+
+.rule-grid div {
+  padding: 10px;
+  border-radius: 8px;
+  background: #f8faf9;
+}
+
+.rule-grid strong {
+  color: #20302f;
+  font-size: 13px;
+}
+
+.rule-grid span {
+  margin-top: 4px;
+  color: #75817e;
+  font-size: 12px;
+  line-height: 1.3;
 }
 
 .bounty-card {
@@ -594,6 +746,27 @@ label,
   font-weight: 600;
 }
 
+.bounty-badge.accepted,
+.status-tag.accepted {
+  background: #e3f2fd;
+  color: #1565c0;
+}
+
+.bounty-badge.failed,
+.status-tag.failed {
+  background: #f8d7da;
+  color: #721c24;
+}
+
+.status-tag {
+  display: inline-block;
+  padding: 3px 8px;
+  border-radius: 999px;
+  background: #d4edda;
+  color: #155724;
+  font-weight: 700;
+}
+
 .reward-icon {
   font-size: 24px;
 }
@@ -655,6 +828,10 @@ label,
 .transaction-list {
   display: grid;
   gap: 12px;
+}
+
+.mini-list {
+  gap: 8px;
 }
 
 .transaction-item {

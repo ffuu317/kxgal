@@ -56,6 +56,16 @@ ipconfig getifaddr en0
 http://localhost:3000
 ```
 
+## AI 评论可信度
+
+发表评论时，后端会优先调用 Hugging Face 上的 `twn39/chinese-roberta-wwm-ext-finetune-dianping` 模型评估评论可信度，并把分数展示在评论下方。配置环境变量后即可启用远程模型：
+
+```bash
+export HUGGINGFACE_API_KEY="你的 Hugging Face token"
+```
+
+未配置 token 或模型暂不可用时，系统会自动使用本地规则兜底，评论仍可发布并展示可信度。
+
 默认体验账号：
 
 ```text

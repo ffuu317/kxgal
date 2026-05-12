@@ -74,6 +74,10 @@ model Comment {
   content        String
   status         String   @default("published")
   aiVerified     String   @default("pending")
+  credibilityScore Int    @default(85)
+  credibilityLabel String @default("high")
+  credibilityReason String @default("历史评论默认通过")
+  credibilityModel String @default("legacy")
   consumedCoins  Int      @default(0)
   receiptImageUrl String?
   createdAt      DateTime @default(now())
