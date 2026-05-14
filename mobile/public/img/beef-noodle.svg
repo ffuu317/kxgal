@@ -1,0 +1,29 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 400 300">
+  <rect width="400" height="300" fill="#F5F0E8"/>
+  <ellipse cx="200" cy="230" rx="110" ry="25" fill="#D4C5A9"/>
+  <!-- bowl -->
+  <ellipse cx="200" cy="170" rx="100" ry="25" fill="#FDEBD0"/>
+  <path d="M100 170 Q100 230 200 235 Q300 230 300 170" fill="#FAE5D3" stroke="#E8C9A0" stroke-width="2"/>
+  <ellipse cx="200" cy="170" rx="100" ry="25" fill="none" stroke="#E8C9A0" stroke-width="2"/>
+  <!-- soup -->
+  <ellipse cx="200" cy="170" rx="90" ry="20" fill="#F5CBA7" opacity="0.6"/>
+  <!-- noodles -->
+  <path d="M140 165 Q160 155 180 165 Q200 175 220 165 Q240 155 260 165" stroke="#F4D03F" stroke-width="4" fill="none" stroke-linecap="round"/>
+  <path d="M145 172 Q165 162 185 172 Q205 182 225 172 Q245 162 265 172" stroke="#F4D03F" stroke-width="3" fill="none" stroke-linecap="round"/>
+  <!-- beef slices -->
+  <ellipse cx="170" cy="160" rx="18" ry="8" fill="#C0392B" transform="rotate(-10 170 160)"/>
+  <ellipse cx="220" cy="163" rx="16" ry="7" fill="#E74C3C" transform="rotate(5 220 163)"/>
+  <ellipse cx="195" cy="155" rx="15" ry="7" fill="#C0392B" transform="rotate(-5 195 155)"/>
+  <!-- green onion -->
+  <circle cx="155" cy="175" r="3" fill="#27AE60"/>
+  <circle cx="245" cy="170" r="3" fill="#27AE60"/>
+  <circle cx="200" cy="178" r="2.5" fill="#2ECC71"/>
+  <!-- happy face on bowl -->
+  <circle cx="185" cy="200" r="3" fill="#8B6914"/>
+  <circle cx="215" cy="200" r="3" fill="#8B6914"/>
+  <path d="M188 210 Q200 218 212 210" stroke="#8B6914" stroke-width="2" fill="none" stroke-linecap="round"/>
+  <!-- steam -->
+  <path d="M175 140 Q180 125 175 110" stroke="#BDC3C7" stroke-width="2.5" fill="none" stroke-linecap="round" opacity="0.4"/>
+  <path d="M200 135 Q205 120 200 105" stroke="#BDC3C7" stroke-width="2.5" fill="none" stroke-linecap="round" opacity="0.4"/>
+  <path d="M225 140 Q230 125 225 110" stroke="#BDC3C7" stroke-width="2.5" fill="none" stroke-linecap="round" opacity="0.4"/>
+</svg>
