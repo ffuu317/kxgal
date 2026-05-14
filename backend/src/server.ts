@@ -627,6 +627,23 @@ api.get(
 );
 
 api.get(
+  "/users/me/merchant/coupons",
+  asyncRoute(async (req, res) => {
+    const user = await requireUser(req);
+    const merchant = await prisma.merchant.findUnique({ where: { userId: user.id } });
+    if (!merchant) {
+      res.json({ coupons: [] });
+      return;
+    }
+    const coupons = await prisma.coupon.findMany({
+      where: { merchantId: merchant.id },
+      orderBy: { createdAt: "desc" }
+    });
+    res.json({ coupons });
+  })
+);
+
+api.get(
   "/posts",
   asyncRoute(async (req, res) => {
     const viewer = await currentUser(req);
@@ -1174,6 +1191,86 @@ api.get(
       orderBy: { uploadedAt: "desc" }
     });
     res.json({ photos });
+  })
+);
+
+api.get(
+  "/merchants/:id/coupons",
+  asyncRoute(async (req, res) => {
+    const user = await currentUser(req);
+    const coupons = await prisma.coupon.findMany({
+      where: { merchantId: routeParam(req, "id"), status: "active" },
+      orderBy: { createdAt: "desc" }
+    });
+    res.json({ coupons });
+  })
+);
+
+api.post(
+  "/merchants/coupons",
+  asyncRoute(async (req, res) => {
+    const user = await requireUser(req);
+    
+    if (!user.isMerchant) throw apiError(403, "只有商家用户可以上传优惠券", "NOT_MERCHANT");
+    
+    const merchant = await prisma.merchant.findUnique({ where: { userId: user.id } });
+    if (!merchant) throw apiError(404, "商家信息不存在", "NOT_FOUND");
+    
+    const title = requireString(req.body, "title");
+    const description = requireString(req.body, "description");
+    const type = typeof req.body.type === "string" ? req.body.type : "coupon";
+    const pointsCost = typeof req.body.pointsCost === "number" ? req.body.pointsCost : 50;
+    const originalPrice = typeof req.body.originalPrice === "number" ? req.body.originalPrice : null;
+    const discountValue = typeof req.body.discountValue === "number" ? req.body.discountValue : null;
+    const validityDays = typeof req.body.validityDays === "number" ? req.body.validityDays : 30;
+    const stock = typeof req.body.stock === "number" ? req.body.stock : 100;
+    const imageUrl = typeof req.body.imageUrl === "string" ? req.body.imageUrl : null;
+    const terms = typeof req.body.terms === "string" ? req.body.terms : "";
+    
+    const coupon = await prisma.coupon.create({
+      data: {
+        id: id("cp"),
+        merchantId: merchant.id,
+        title,
+        description,
+        type,
+        pointsCost,
+        originalPrice,
+        discountValue,
+        validityDays,
+        stock,
+        imageUrl,
+        terms,
+        status: "active"
+      }
+    });
+    
+    res.status(201).json({ coupon });
+  })
+);
+
+api.delete(
+  "/merchants/coupons/:id",
+  asyncRoute(async (req, res) => {
+    const user = await requireUser(req);
+    
+    if (!user.isMerchant) throw apiError(403, "只有商家用户可以删除优惠券", "NOT_MERCHANT");
+    
+    const merchant = await prisma.merchant.findUnique({ where: { userId: user.id } });
+    if (!merchant) throw apiError(404, "商家信息不存在", "NOT_FOUND");
+    
+    const coupon = await prisma.coupon.findFirst({
+      where: { id: routeParam(req, "id"), merchantId: merchant.id }
+    });
+    
+    if (!coupon) throw apiError(404, "优惠券不存在", "NOT_FOUND");
+    
+    await prisma.coupon.update({
+      where: { id: coupon.id },
+      data: { status: "deleted" }
+    });
+    
+    res.json({ ok: true });
   })
 );
 

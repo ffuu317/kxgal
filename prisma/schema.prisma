@@ -162,6 +162,7 @@ model Merchant {
   posts           Post[]
   merchantPhotos  MerchantPhoto[]
   weeklyRankings  WeeklyRanking[]
+  coupons         Coupon[]
 
   @@map("merchants")
 }
@@ -220,4 +221,26 @@ model WeeklyRanking {
   @@unique([weekNumber, year, rankType, merchantId])
   @@index([weekNumber, year, rankType])
   @@map("weekly_rankings")
+}
+
+model Coupon {
+  id            String   @id
+  merchantId    String
+  title         String
+  description   String
+  type          String   @default("coupon") // coupon | discount | package | gift
+  pointsCost    Int      @default(50)
+  originalPrice Float?
+  discountValue Float?
+  validityDays  Int      @default(30)
+  stock         Int      @default(100)
+  imageUrl      String?
+  terms         String?
+  status        String   @default("active")
+  createdAt     DateTime @default(now())
+  updatedAt     DateTime @updatedAt
+  merchant      Merchant @relation(fields: [merchantId], references: [id], onDelete: Cascade)
+
+  @@index([merchantId])
+  @@map("coupons")
 }

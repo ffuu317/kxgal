@@ -84,9 +84,11 @@ type Bounty = {
   updatedAt: string;
   publisher?: User;
   acceptor?: User | null;
+  submitDescription?: string;
+  submitImageUrls?: string[];
 };
 
-type View = "home" | "detail" | "publish" | "mine" | "login" | "register" | "fingerprint-register" | "bounty" | "bounty-publish" | "bounty-detail" | "credit" | "merchant" | "merchant-apply" | "map" | "ranking" | "merchant-detail" | "merchant-photos" | "merchant-comments" | "merchant-bounties" | "starpoints" | "starpoints-detail";
+type View = "home" | "detail" | "publish" | "mine" | "login" | "register" | "fingerprint-register" | "bounty" | "bounty-publish" | "bounty-detail" | "credit" | "merchant" | "merchant-apply" | "map" | "ranking" | "merchant-detail" | "merchant-photos" | "merchant-comments" | "merchant-bounties" | "merchant-coupons" | "starpoints" | "starpoints-detail";
 
 type Merchant = {
   id: string;
@@ -197,6 +199,25 @@ type MerchantReward = {
   claimedCount: number; // 已兑换数量
   imageUrl?: string;
   terms?: string; // 使用条款
+};
+
+// 商家优惠券类型
+type Coupon = {
+  id: string;
+  merchantId: string;
+  title: string;
+  description: string;
+  type: "coupon" | "discount" | "package" | "gift";
+  pointsCost: number;
+  originalPrice?: number;
+  discountValue?: number;
+  validityDays: number;
+  stock: number;
+  imageUrl?: string;
+  terms?: string;
+  status: string;
+  createdAt: string;
+  updatedAt: string;
 };
 
 // 用户已兑换的权益
@@ -364,6 +385,8 @@ function App() {
   const [selectedPost, setSelectedPost] = useState<Post | null>(null);
   const [selectedBounty, setSelectedBounty] = useState<Bounty | null>(null);
   const [query, setQuery] = useState("");
+  const [searchResults, setSearchResults] = useState<Post[] | null>(null);
+  const [searchMerchants, setSearchMerchants] = useState<Merchant[] | null>(null);
   const [imageDataUrl, setImageDataUrl] = useState("");
   const [receiptDataUrl, setReceiptDataUrl] = useState("");
   const [message, setMessage] = useState("");
@@ -390,6 +413,17 @@ function App() {
       longitude: 120.1285,
       createdAt: new Date(Date.now() - 20 * 24 * 60 * 60 * 1000).toISOString(),
       updatedAt: new Date().toISOString()
+    },
+    {
+      id: "m_ffuu",
+      userId: "user_ffuu",
+      businessName: "ffuu",
+      businessAddress: "测试地址",
+      status: "approved",
+      latitude: 30.3000,
+      longitude: 120.3000,
+      createdAt: new Date().toISOString(),
+      updatedAt: new Date().toISOString()
     }
   ]);
   const [selectedMerchant, setSelectedMerchant] = useState<Merchant | null>(null);
@@ -398,6 +432,7 @@ function App() {
   const [merchantPhotos, setMerchantPhotos] = useState<any[]>([]);
   const [merchantComments, setMerchantComments] = useState<MerchantComment[]>([]);
   const [merchantBountiesList, setMerchantBountiesList] = useState<Bounty[]>([]);
+  const [merchantCoupons, setMerchantCoupons] = useState<Coupon[]>([]);
   const [rankings, setRankings] = useState<WeeklyRanking[]>([]);
   const [rankingTab, setRankingTab] = useState<"hot" | "avoid">("hot");
   
@@ -428,7 +463,48 @@ function App() {
   }
 
   async function loadPosts(nextQuery = query, nextPostFilter = postFilter) {
-    // mock模式：使用本地数据
+    // mock模式：根据搜索关键词和筛选条件过滤帖子
+    let filteredPosts = [...posts];
+    
+    // 根据帖子类型筛选
+    if (nextPostFilter !== "all") {
+      filteredPosts = filteredPosts.filter(post => post.postType === nextPostFilter);
+    }
+    
+    // 根据搜索关键词筛选并排序（匹配度高的置顶）
+    if (nextQuery) {
+      const queryLower = nextQuery.toLowerCase();
+      filteredPosts = filteredPosts.map(post => {
+        const titleMatch = post.title?.toLowerCase().includes(queryLower) ? 1 : 0;
+        const contentMatch = post.content?.toLowerCase().includes(queryLower) ? 1 : 0;
+        const tagMatch = post.tags?.some(tag => tag.toLowerCase().includes(queryLower)) ? 1 : 0;
+        const merchantMatch = post.merchantName?.toLowerCase().includes(queryLower) ? 1 : 0;
+        return {
+          ...post,
+          matchScore: titleMatch * 3 + contentMatch * 2 + tagMatch * 2 + merchantMatch * 1
+        };
+      }).filter(post => post.matchScore > 0)
+        .sort((a, b) => (b.matchScore || 0) - (a.matchScore || 0));
+      
+      // 同时搜索商家
+      const matchedMerchants = merchants.filter(m => 
+        m.businessName.toLowerCase().includes(queryLower) ||
+        m.businessAddress.toLowerCase().includes(queryLower)
+      ).sort((a, b) => {
+        // 完全匹配优先
+        const aExact = a.businessName.toLowerCase() === queryLower ? 2 : a.businessName.toLowerCase().startsWith(queryLower) ? 1 : 0;
+        const bExact = b.businessName.toLowerCase() === queryLower ? 2 : b.businessName.toLowerCase().startsWith(queryLower) ? 1 : 0;
+        return bExact - aExact;
+      });
+      setSearchMerchants(matchedMerchants);
+    } else {
+      setSearchMerchants(null);
+    }
+    
+    // 更新状态
+    setQuery(nextQuery);
+    setPostFilter(nextPostFilter);
+    setSearchResults(nextQuery ? filteredPosts : null);
   }
 
   async function loadMerchants() {
@@ -440,8 +516,40 @@ function App() {
     const found = merchants.find(m => m.id === merchantId);
     if (found) {
       setSelectedMerchant(found);
-      setMerchantPosts([]);
-      setMerchantBounties([]);
+      // 根据商家ID、商家名称以及标题/正文包含@商家名来匹配帖子
+      const matchedPosts = posts.filter(post => {
+        // 直接匹配merchantId
+        if (post.merchantId === merchantId) return true;
+        // 匹配商家名称
+        if (found.businessName && post.merchantName) {
+          if (post.merchantName.includes(found.businessName) || found.businessName.includes(post.merchantName)) {
+            return true;
+          }
+        }
+        // 检查标题和正文是否包含@商家名
+        const fullText = `${post.title || ""} ${post.content || ""}`;
+        if (found.businessName && fullText.includes(`@${found.businessName}`)) {
+          return true;
+        }
+        return false;
+      });
+      // 根据商家ID、商家名称匹配悬赏
+      const matchedBounties = bounties.filter(bounty => {
+        if (bounty.merchantId === merchantId) return true;
+        if (found.businessName && bounty.merchantName) {
+          if (bounty.merchantName.includes(found.businessName) || found.businessName.includes(bounty.merchantName)) {
+            return true;
+          }
+        }
+        // 检查商家名称和描述
+        const fullText = `${bounty.merchantName || ""} ${bounty.description || ""}`;
+        if (found.businessName && fullText.includes(`@${found.businessName}`)) {
+          return true;
+        }
+        return false;
+      });
+      setMerchantPosts(matchedPosts);
+      setMerchantBounties(matchedBounties);
       setMerchantPhotos([]);
     }
   }
@@ -740,7 +848,13 @@ function App() {
       validityDays: 30,
       stock: Math.floor(Math.random() * 50) + 10,
       claimedCount: Math.floor(Math.random() * 100),
-      imageUrl: `https://images.unsplash.com/photo-${1550000000000 + idx * 100000}?w=200`,
+      imageUrl: [
+        "data:image/svg+xml;utf8," + encodeURIComponent('<svg xmlns="http://www.w3.org/2000/svg" width="200" height="150"><rect width="200" height="150" fill="#ff6b6b"/><text x="100" y="80" text-anchor="middle" font-size="14" fill="white">优惠券</text></svg>'),
+        "data:image/svg+xml;utf8," + encodeURIComponent('<svg xmlns="http://www.w3.org/2000/svg" width="200" height="150"><rect width="200" height="150" fill="#4ecdc4"/><text x="100" y="80" text-anchor="middle" font-size="14" fill="white">折扣券</text></svg>'),
+        "data:image/svg+xml;utf8," + encodeURIComponent('<svg xmlns="http://www.w3.org/2000/svg" width="200" height="150"><rect width="200" height="150" fill="#ffeaa7"/><text x="100" y="80" text-anchor="middle" font-size="14" fill="#2d3436">套餐券</text></svg>'),
+        "data:image/svg+xml;utf8," + encodeURIComponent('<svg xmlns="http://www.w3.org/2000/svg" width="200" height="150"><rect width="200" height="150" fill="#a29bfe"/><text x="100" y="80" text-anchor="middle" font-size="14" fill="white">赠品券</text></svg>'),
+        "data:image/svg+xml;utf8," + encodeURIComponent('<svg xmlns="http://www.w3.org/2000/svg" width="200" height="150"><rect width="200" height="150" fill="#fd79a8"/><text x="100" y="80" text-anchor="middle" font-size="14" fill="white">免单券</text></svg>')
+      ][idx] || "data:image/svg+xml;utf8," + encodeURIComponent('<svg xmlns="http://www.w3.org/2000/svg" width="200" height="150"><rect width="200" height="150" fill="#636e72"/><text x="100" y="80" text-anchor="middle" font-size="14" fill="white">兑换券</text></svg>'),
       terms: "不可与其他优惠叠加使用，最终解释权归商家所有"
     }));
   }
@@ -1225,13 +1339,31 @@ function App() {
   }
 
   async function openPost(id: string) {
-    const [postData, commentData] = await Promise.all([
-      api<{ post: Post }>(`/posts/${id}`),
-      api<{ comments: Comment[] }>(`/posts/${id}/comments`)
-    ]);
-    setSelectedPost(postData.post);
-    setComments(commentData.comments);
-    setView("detail");
+    // mock模式：从本地状态查找帖子
+    const post = posts.find(p => p.id === id);
+    if (post) {
+      setSelectedPost(post);
+      // mock评论数据
+      setComments([
+        {
+          id: "comment_1",
+          postId: id,
+          authorId: "user_demo_1",
+          content: "看起来不错！",
+          createdAt: new Date(Date.now() - 3600000).toISOString(),
+          author: { id: "user_demo_1", phone: "", nickname: "美食达人", avatarUrl: "", bio: "", status: "active", level: "gold", creditCoin: 1000, isMerchant: false, merchantStatus: "none", idCardVerified: true, warningCount: 0, createdAt: "", updatedAt: "" }
+        },
+        {
+          id: "comment_2",
+          postId: id,
+          authorId: "user_demo_2",
+          content: "下次我也去试试",
+          createdAt: new Date(Date.now() - 7200000).toISOString(),
+          author: { id: "user_demo_2", phone: "", nickname: "吃货小王", avatarUrl: "", bio: "", status: "active", level: "silver", creditCoin: 500, isMerchant: false, merchantStatus: "none", idCardVerified: false, warningCount: 0, createdAt: "", updatedAt: "" }
+        }
+      ]);
+      setView("detail");
+    }
   }
 
   function openBounty(id: string) {
@@ -1408,23 +1540,57 @@ function App() {
     }
   }
 
+  // 解析文本中的@商家
+  function parseAtMerchants(text: string): { merchantId: string | null; merchantName: string | null } {
+    const atPattern = /@([^\s@]+)/g;
+    const matches = text.match(atPattern);
+    
+    if (matches) {
+      for (const match of matches) {
+        const merchantName = match.slice(1); // 去掉@符号
+        const foundMerchant = merchants.find(m => 
+          m.businessName === merchantName || 
+          m.businessName.includes(merchantName) || 
+          merchantName.includes(m.businessName)
+        );
+        if (foundMerchant) {
+          return { merchantId: foundMerchant.id, merchantName: foundMerchant.businessName };
+        }
+      }
+    }
+    
+    return { merchantId: null, merchantName: null };
+  }
+
   async function createPost(event: FormEvent<HTMLFormElement>) {
     event.preventDefault();
     if (!token) return setView("login");
     try {
-      if (!imageDataUrl) throw new Error("请先选择一张图片");
       const values = formValues(event.currentTarget);
-      // mock模式：直接创建帖子
+      
+      // 解析@商家
+      const allText = `${values.title || ""} ${values.content || ""}`;
+      const { merchantId, merchantName: parsedMerchantName } = parseAtMerchants(allText);
+      
+      // 检查：商家不能给自己发帖子
+      if (user?.isMerchant && merchantId) {
+        const userMerchant = merchants.find(m => m.userId === user.id);
+        if (userMerchant && userMerchant.id === merchantId) {
+          throw new Error("商家不能给自己发帖子");
+        }
+      }
+      
+      // mock模式：直接创建帖子（临时允许无图片）
       const newPost: Post = {
         id: "post_" + Date.now(),
         authorId: user?.id || "user_mock",
         title: values.title,
         content: values.content,
-        merchantId: values.merchantId || null,
-        merchantName: values.merchantName,
+        merchantId: merchantId || null,
+        merchantName: parsedMerchantName || values.merchantName || "",
         postType: values.postType || "recommend",
         tags: String(values.tags || "").split(/[，,\s]+/).filter(Boolean),
-        imageUrls: [imageDataUrl],
+        imageUrls: imageDataUrl ? [imageDataUrl] : [],
         likeCount: 0,
         commentCount: 0,
         likedByMe: false,
@@ -1514,13 +1680,20 @@ function App() {
       const rewardCoins = parseInt(values.rewardCoins) || 50;
       const deadlineDays = parseInt(values.deadlineDays) || 7;
       
+      // 解析@商家
+      const allText = `${values.merchantName || ""} ${values.description || ""}`;
+      const { merchantId, merchantName: parsedMerchantName } = parseAtMerchants(allText);
+      
+      // 清理商家名称中的@符号
+      const cleanMerchantName = (values.merchantName || "").replace(/@/g, "");
+      
       // mock模式：直接创建悬赏数据
       const newBounty: Bounty = {
         id: "bounty_" + Date.now(),
         publisherId: user?.id || "user_mock",
         acceptorId: null,
-        merchantId: values.merchantId || null,
-        merchantName: values.merchantName,
+        merchantId: merchantId || null,
+        merchantName: parsedMerchantName || cleanMerchantName,
         merchantAddress: values.merchantAddress,
         description: values.description,
         imageUrls: [],
@@ -1561,12 +1734,23 @@ function App() {
       return;
     }
     try {
-      // mock模式：直接完成悬赏
+      const values = formValues(event.currentTarget);
+      const submitDesc = values.submitDescription || "";
+      
       setBounties(prev => prev.map(b => 
-        b.id === bountyId ? { ...b, status: "completed", imageUrls: [imageDataUrl] } : b
+        b.id === bountyId ? { 
+          ...b, 
+          status: "completed", 
+          submitDescription: submitDesc,
+          submitImageUrls: [imageDataUrl]
+        } : b
       ));
-      // 同步更新 selectedBounty
-      setSelectedBounty(prev => prev?.id === bountyId ? { ...prev, status: "completed", imageUrls: [imageDataUrl] } : prev);
+      setSelectedBounty(prev => prev?.id === bountyId ? { 
+        ...prev, 
+        status: "completed", 
+        submitDescription: submitDesc,
+        submitImageUrls: [imageDataUrl]
+      } : prev);
       setImageDataUrl("");
       flash("任务完成，获得50信用币");
     } catch (error) {
@@ -1576,12 +1760,16 @@ function App() {
 
   async function applyMerchant(event: FormEvent<HTMLFormElement>) {
     event.preventDefault();
-    if (!token) return setView("login");
+    if (!user) {
+      flash("请先登录");
+      setView("login");
+      return;
+    }
     try {
       // mock模式：直接更新用户状态
       setUser(prev => prev ? { ...prev, isMerchant: true, merchantStatus: "pending" } : prev);
       setView("merchant");
-      flash("商家认证申请已提交");
+      flash("商家认证申请已提交，等待审核");
     } catch (error) {
       flash((error as Error).message);
     }
@@ -1597,6 +1785,57 @@ function App() {
       // mock模式：直接成功
       setImageDataUrl("");
       flash("厨房照片上传成功");
+    } catch (error) {
+      flash((error as Error).message);
+    }
+  }
+
+  async function loadMerchantCoupons() {
+    try {
+      const data = await api<{ coupons: Coupon[] }>("/users/me/merchant/coupons");
+      setMerchantCoupons(data.coupons);
+    } catch (error) {
+      console.error("Failed to load coupons:", error);
+      setMerchantCoupons([]);
+    }
+  }
+
+  async function uploadCoupon(event: FormEvent<HTMLFormElement>) {
+    event.preventDefault();
+    if (!token) {
+      flash("请先登录");
+      return;
+    }
+    try {
+      const values = formValues(event.currentTarget);
+      await api("/merchants/coupons", {
+        method: "POST",
+        body: JSON.stringify({
+          title: values.title,
+          description: values.description,
+          type: values.type || "coupon",
+          pointsCost: parseInt(values.pointsCost) || 50,
+          originalPrice: values.originalPrice ? parseFloat(values.originalPrice) : null,
+          discountValue: values.discountValue ? parseFloat(values.discountValue) : null,
+          validityDays: parseInt(values.validityDays) || 30,
+          stock: parseInt(values.stock) || 100,
+          imageUrl: imageDataUrl || null,
+          terms: values.terms || ""
+        })
+      });
+      setImageDataUrl("");
+      await loadMerchantCoupons();
+      flash("优惠券创建成功");
+    } catch (error) {
+      flash((error as Error).message);
+    }
+  }
+
+  async function deleteCoupon(couponId: string) {
+    try {
+      await api(`/merchants/coupons/${couponId}`, { method: "DELETE" });
+      await loadMerchantCoupons();
+      flash("优惠券已删除");
     } catch (error) {
       flash((error as Error).message);
     }
@@ -1659,6 +1898,9 @@ function App() {
     if (view === "merchant-photos" && user?.isMerchant) {
       loadMerchantPhotos().catch(() => {});
     }
+    if (view === "merchant-coupons" && user?.isMerchant) {
+      loadMerchantCoupons().catch(() => {});
+    }
   }, [view, user]);
 
   useEffect(() => {
@@ -1681,7 +1923,7 @@ function App() {
         <HomeView
           user={user}
           query={query}
-          posts={posts}
+          posts={searchResults || posts}
           postFilter={postFilter}
           onSearch={handleSearch}
           onFilterChange={(filter) => {
@@ -1690,6 +1932,11 @@ function App() {
           }}
           onGo={setView}
           onOpenPost={openPost}
+          searchMerchants={searchMerchants}
+          onOpenMerchantDetail={(merchantId) => {
+            loadMerchantDetail(merchantId);
+            setView("merchant-detail");
+          }}
         />
       ) : null}
       
@@ -1790,7 +2037,7 @@ function App() {
       ) : null}
       
       {view === "merchant-apply" ? (
-        <MerchantApplyView onApply={applyMerchant} onGo={setView} />
+        <MerchantApplyView onApply={applyMerchant} onGo={setView} user={user} token={token} />
       ) : null}
       
       {view === "map" ? (
@@ -1914,6 +2161,17 @@ function App() {
         />
       ) : null}
       
+      {view === "merchant-coupons" ? (
+        <MerchantCouponsView
+          coupons={merchantCoupons}
+          onGo={setView}
+          onUploadCoupon={uploadCoupon}
+          onDeleteCoupon={deleteCoupon}
+          imageDataUrl={imageDataUrl}
+          onPickImage={async (file) => setImageDataUrl(file ? await readFileAsDataUrl(file) : "")}
+        />
+      ) : null}
+      
       {view === "starpoints" && selectedRewardMerchant ? (
         <StarPointsView
           merchant={selectedRewardMerchant}
@@ -1938,7 +2196,9 @@ function HomeView({
   onSearch,
   onFilterChange,
   onGo,
-  onOpenPost
+  onOpenPost,
+  searchMerchants,
+  onOpenMerchantDetail
 }: {
   user: User | null;
   query: string;
@@ -1948,6 +2208,8 @@ function HomeView({
   onFilterChange: (filter: "all" | "recommend" | "avoid") => void;
   onGo: (view: View) => void;
   onOpenPost: (id: string) => void;
+  searchMerchants: Merchant[] | null;
+  onOpenMerchantDetail: (merchantId: string) => void;
 }) {
   return (
     <>
@@ -1989,10 +2251,45 @@ function HomeView({
           避雷
         </button>
       </section>
+      
+      {/* 商家搜索结果 */}
+      {query && searchMerchants && searchMerchants.length > 0 && (
+        <section className="merchant-search-results">
+          <h2 className="section-title">🏪 相关商家</h2>
+          <div className="merchant-list">
+            {searchMerchants.map((merchant) => (
+              <article 
+                key={merchant.id} 
+                className="merchant-card"
+                onClick={() => onOpenMerchantDetail(merchant.id)}
+              >
+                <div className="merchant-info">
+                  <h3>{merchant.businessName}</h3>
+                  <p className="merchant-address">{merchant.businessAddress}</p>
+                </div>
+                <div className="merchant-action">
+                  <span className="go-btn">→</span>
+                </div>
+              </article>
+            ))}
+          </div>
+        </section>
+      )}
+      
+      {/* 帖子搜索结果 */}
       <section className="feed">
-        {posts
-          .filter(p => postFilter === "all" || p.postType === postFilter)
-          .map((post) => <PostCard key={post.id} post={post} onOpenPost={onOpenPost} />) || <Empty />}
+        {query && posts.length === 0 && (!searchMerchants || searchMerchants.length === 0) ? (
+          <Empty text="没有找到相关内容" />
+        ) : query && posts.length > 0 ? (
+          <>
+            <h2 className="section-title">📝 相关帖子</h2>
+            {posts.map((post) => <PostCard key={post.id} post={post} onOpenPost={onOpenPost} />)}
+          </>
+        ) : posts.length > 0 ? (
+          posts.map((post) => <PostCard key={post.id} post={post} onOpenPost={onOpenPost} />)
+        ) : (
+          <Empty text="还没有帖子" />
+        )}
       </section>
     </>
   );
@@ -2336,11 +2633,11 @@ function PublishView({
         {imageDataUrl ? <img className="preview" src={imageDataUrl} alt="" /> : null}
         <label>
           标题
-          <input name="title" required />
+          <input name="title" required placeholder="可以使用 @商家名 来关联商家" />
         </label>
         <label>
           正文
-          <textarea name="content" required />
+          <textarea name="content" required placeholder="可以使用 @商家名 来关联商家，如：@好吃餐厅 的牛肉面很好吃" />
         </label>
         <label>
           帖子类型
@@ -2349,21 +2646,28 @@ function PublishView({
             <option value="avoid">⚠️ 避雷</option>
           </select>
         </label>
-        <label>
-          关联商家
-          <select name="merchantId" defaultValue="">
-            <option value="">不关联商家</option>
-            {merchants.map((merchant) => (
-              <option key={merchant.id} value={merchant.id}>
-                {merchant.businessName}
-              </option>
+        <div className="at-merchant-section">
+          <p className="hint">💡 快捷@商家：</p>
+          <div className="merchant-tags">
+            {merchants.slice(0, 5).map((merchant) => (
+              <button
+                key={merchant.id}
+                type="button"
+                className="merchant-tag"
+                onClick={(e) => {
+                  e.preventDefault();
+                  const contentInput = document.querySelector('textarea[name="content"]') as HTMLTextAreaElement;
+                  if (contentInput) {
+                    contentInput.value += `@${merchant.businessName} `;
+                    contentInput.focus();
+                  }
+                }}
+              >
+                @{merchant.businessName}
+              </button>
             ))}
-          </select>
-        </label>
-        <label>
-          商家名称
-          <input name="merchantName" placeholder="输入商家名称" />
-        </label>
+          </div>
+        </div>
         <label>
           标签
           <input name="tags" placeholder="牛肉面, 午餐, 实拍" />
@@ -2470,6 +2774,21 @@ function MineView({
                   </div>
                 </div>
                 <p className="bounty-desc">{bounty.description}</p>
+                {bounty.status === "completed" && (
+                  <div className="submit-content">
+                    <h4>任务提交内容</h4>
+                    {bounty.submitDescription && (
+                      <p className="submit-desc">{bounty.submitDescription}</p>
+                    )}
+                    {bounty.submitImageUrls && bounty.submitImageUrls.length > 0 && (
+                      <div className="submit-images">
+                        {bounty.submitImageUrls.map((img, idx) => (
+                          <img key={idx} src={img} alt="" className="submit-image" />
+                        ))}
+                      </div>
+                    )}
+                  </div>
+                )}
                 <div className="bounty-footer">
                   <span className={`status-tag ${bounty.status}`}>
                     {bounty.status === "active" ? "待接取" : bounty.status === "accepted" ? "进行中" : bounty.status === "completed" ? "已完成" : "已失败"}
@@ -2577,27 +2896,38 @@ function BountyPublishView({
       <h1>发布悬赏</h1>
       <form className="form" onSubmit={onCreateBounty}>
         <label>
-          关联商家
-          <select name="merchantId" defaultValue="">
-            <option value="">不关联商家</option>
-            {merchants.map((merchant) => (
-              <option key={merchant.id} value={merchant.id}>
-                {merchant.businessName}
-              </option>
-            ))}
-          </select>
-        </label>
-        <label>
           商家名称
-          <input name="merchantName" required />
+          <input name="merchantName" required placeholder="可以使用 @商家名 来关联商家" />
         </label>
         <label>
           商家地址
           <input name="merchantAddress" required />
         </label>
+        <div className="at-merchant-section">
+          <p className="hint">💡 快捷@商家：</p>
+          <div className="merchant-tags">
+            {merchants.slice(0, 5).map((merchant) => (
+              <button
+                key={merchant.id}
+                type="button"
+                className="merchant-tag"
+                onClick={(e) => {
+                  e.preventDefault();
+                  const nameInput = document.querySelector('input[name="merchantName"]') as HTMLInputElement;
+                  if (nameInput) {
+                    nameInput.value = `@${merchant.businessName}`;
+                    nameInput.focus();
+                  }
+                }}
+              >
+                @{merchant.businessName}
+              </button>
+            ))}
+          </div>
+        </div>
         <label>
           任务描述
-          <textarea name="description" required />
+          <textarea name="description" required placeholder="可以使用 @商家名 来关联商家" />
         </label>
         <label>
           奖励信用币
@@ -2687,10 +3017,35 @@ function BountyDetailView({
           </div>
         )}
         
+        {bounty.status === "completed" && (
+          <div className="bounty-info">
+            <h2>任务提交内容</h2>
+            {bounty.submitDescription && (
+              <div className="submit-desc-section">
+                <p className="submit-desc">{bounty.submitDescription}</p>
+              </div>
+            )}
+            {bounty.submitImageUrls && bounty.submitImageUrls.length > 0 && (
+              <div className="submit-images-section">
+                {bounty.submitImageUrls.map((img, idx) => (
+                  <img key={idx} src={img} alt="" className="submit-image" />
+                ))}
+              </div>
+            )}
+            {!bounty.submitDescription && (!bounty.submitImageUrls || bounty.submitImageUrls.length === 0) && (
+              <p className="empty-submit">暂无提交内容</p>
+            )}
+          </div>
+        )}
+        
         {canSubmit && (
           <div className="submit-section">
             <h2>提交任务</h2>
             <form className="form" onSubmit={(e) => onSubmit(e, bounty.id)}>
+              <label>
+                任务描述（选填）
+                <textarea name="submitDescription" placeholder="补充描述任务完成情况..." rows={3} />
+              </label>
               <label>
                 上传现场图片
                 <input type="file" accept="image/*" onChange={(event) => onPickImage(event.currentTarget.files?.[0])} />
@@ -2848,6 +3203,10 @@ function MerchantView({
               <span className="feature-icon">💰</span>
               <span>被悬赏记录</span>
             </div>
+            <div className="feature-item clickable" onClick={() => onGo("merchant-coupons")}>
+              <span className="feature-icon">🎫</span>
+              <span>优惠券管理</span>
+            </div>
           </div>
         </div>
       </section>
@@ -2857,40 +3216,67 @@ function MerchantView({
 
 function MerchantApplyView({
   onApply,
-  onGo
+  onGo,
+  user,
+  token
 }: {
   onApply: (event: FormEvent<HTMLFormElement>) => void;
   onGo: (view: View) => void;
+  user: User | null;
+  token: string;
 }) {
+  // 如果有 user 就直接显示表单，不管 token（兼容 mock 模式）
+  if (user) {
+    return (
+      <section className="panel">
+        <button className="back" onClick={() => onGo("mine")}>← 返回</button>
+        <h1>商家认证申请</h1>
+        <form className="form" onSubmit={onApply}>
+          <label>
+            商家名称
+            <input name="businessName" required />
+          </label>
+          <label>
+            商家地址
+            <input name="businessAddress" required />
+          </label>
+          <label>
+            营业执照号（选填）
+            <input name="businessLicense" />
+          </label>
+          <button className="primary" type="submit">
+            提交申请
+          </button>
+        </form>
+      </section>
+    );
+  }
+  
+  // 否则提示登录
   return (
     <section className="panel">
       <button className="back" onClick={() => onGo("mine")}>← 返回</button>
       <h1>商家认证申请</h1>
-      <form className="form" onSubmit={onApply}>
-        <label>
-          商家名称
-          <input name="businessName" required />
-        </label>
-        <label>
-          商家地址
-          <input name="businessAddress" required />
-        </label>
-        <label>
-          营业执照号（选填）
-          <input name="businessLicense" />
-        </label>
-        <button className="primary" type="submit">
-          提交申请
-        </button>
-      </form>
+      <p>请先登录后再申请商家认证</p>
+      <button className="primary" onClick={() => onGo("login")}>
+        去登录
+      </button>
     </section>
   );
 }
 
 function PostCard({ post, onOpenPost }: { post: Post; onOpenPost: (id: string) => void }) {
+  const coverUrl = post.coverImageUrl || post.imageUrls[0] || "";
   return (
     <article className="post-card" onClick={() => onOpenPost(post.id)}>
-      <img className="post-cover" src={post.coverImageUrl} alt="" />
+      {coverUrl ? (
+        <img className="post-cover" src={coverUrl} alt="" />
+      ) : (
+        <div className="post-cover-placeholder">
+          <span className="placeholder-icon">📷</span>
+          <span className="placeholder-text">暂无图片</span>
+        </div>
+      )}
       <div className="post-body">
         <div className="post-type-badge">
           {post.postType === "recommend" ? "👍 推荐" : post.postType === "avoid" ? "⚠️ 避雷" : ""}
@@ -4074,6 +4460,130 @@ function MerchantPhotosView({
           ))
         ) : (
           <Empty text="暂无上传图片" />
+        )}
+      </section>
+    </>
+  );
+}
+
+// 商家优惠券管理页面
+function MerchantCouponsView({
+  coupons,
+  onGo,
+  onUploadCoupon,
+  onDeleteCoupon,
+  imageDataUrl,
+  onPickImage
+}: {
+  coupons: Coupon[];
+  onGo: (view: View) => void;
+  onUploadCoupon: (event: FormEvent<HTMLFormElement>) => void;
+  onDeleteCoupon: (couponId: string) => void;
+  imageDataUrl: string;
+  onPickImage: (file: File | undefined) => void;
+}) {
+  const [showUpload, setShowUpload] = useState(false);
+
+  return (
+    <>
+      <button className="back" onClick={() => onGo("merchant")}>← 返回商家中心</button>
+      <section className="panel">
+        <div className="section-header">
+          <h1>优惠券管理</h1>
+          <button className="primary small" onClick={() => setShowUpload(!showUpload)}>
+            {showUpload ? "取消创建" : "创建优惠券"}
+          </button>
+        </div>
+        
+        {showUpload && (
+          <form className="form" onSubmit={onUploadCoupon}>
+            <label>
+              优惠券名称
+              <input name="title" required placeholder="例如：满100减20优惠券" />
+            </label>
+            <label>
+              优惠券描述
+              <textarea name="description" required placeholder="优惠券使用说明..." rows={2} />
+            </label>
+            <label>
+              类型
+              <select name="type" defaultValue="coupon">
+                <option value="coupon">优惠券</option>
+                <option value="discount">折扣券</option>
+                <option value="package">套餐券</option>
+                <option value="gift">赠品券</option>
+              </select>
+            </label>
+            <label>
+              兑换积分
+              <input name="pointsCost" type="number" defaultValue="50" min="1" required />
+            </label>
+            <label>
+              原价（选填）
+              <input name="originalPrice" type="number" placeholder="例如：128" />
+            </label>
+            <label>
+              折扣值（选填，例如：0.88表示88折）
+              <input name="discountValue" type="number" step="0.01" placeholder="例如：0.88" />
+            </label>
+            <label>
+              有效期天数
+              <input name="validityDays" type="number" defaultValue="30" min="1" />
+            </label>
+            <label>
+              库存数量
+              <input name="stock" type="number" defaultValue="100" min="1" />
+            </label>
+            <label>
+              使用条款（选填）
+              <textarea name="terms" placeholder="使用规则说明..." rows={2} />
+            </label>
+            <label>
+              优惠券图片（选填）
+              <input type="file" accept="image/*" onChange={(e) => onPickImage(e.target.files?.[0])} />
+            </label>
+            {imageDataUrl ? <img className="preview" src={imageDataUrl} alt="" /> : null}
+            <button className="primary" type="submit">
+              创建优惠券
+            </button>
+          </form>
+        )}
+      </section>
+      
+      <section className="coupon-list">
+        <h2>我的优惠券</h2>
+        {coupons.length > 0 ? (
+          coupons.map(coupon => (
+            <div key={coupon.id} className="coupon-card">
+              <div className="coupon-image">
+                {coupon.imageUrl ? (
+                  <img src={coupon.imageUrl} alt="" />
+                ) : (
+                  <div className="coupon-placeholder">
+                    {coupon.type === "coupon" ? "🎫" : coupon.type === "discount" ? "🏷️" : coupon.type === "package" ? "🍽️" : "🎁"}
+                  </div>
+                )}
+              </div>
+              <div className="coupon-content">
+                <h3>{coupon.title}</h3>
+                <p>{coupon.description}</p>
+                <div className="coupon-meta">
+                  <span className="coupon-points">{coupon.pointsCost}积分</span>
+                  <span className="coupon-stock">库存: {coupon.stock}</span>
+                  <span className="coupon-validity">有效期: {coupon.validityDays}天</span>
+                </div>
+                {coupon.originalPrice && (
+                  <p className="coupon-original">原价: ¥{coupon.originalPrice}</p>
+                )}
+                {coupon.discountValue && (
+                  <p className="coupon-discount">{coupon.discountValue * 10}折</p>
+                )}
+              </div>
+              <button className="danger small" onClick={() => onDeleteCoupon(coupon.id)}>删除</button>
+            </div>
+          ))
+        ) : (
+          <Empty text="暂无优惠券，创建一个吧" />
         )}
       </section>
     </>
