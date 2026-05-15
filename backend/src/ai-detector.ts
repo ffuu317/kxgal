@@ -1,9 +1,11 @@
 import axios from "axios";
 
-const HUGGINGFACE_API_URL = "https://api-inference.huggingface.co/models";
+const HUGGINGFACE_API_URL =
+  process.env.HUGGINGFACE_API_URL || "https://router.huggingface.co/hf-inference/models";
 const HUGGINGFACE_API_KEY = process.env.HUGGINGFACE_API_KEY;
-const COMMENT_TRUST_MODEL =
-  process.env.COMMENT_TRUST_MODEL || "twn39/chinese-roberta-wwm-ext-finetune-dianping";
+const SENTIMENT_MODEL =
+  process.env.SENTIMENT_MODEL || "nlptown/bert-base-multilingual-uncased-sentiment";
+const COMMENT_TRUST_MODEL = process.env.COMMENT_TRUST_MODEL || SENTIMENT_MODEL;
 
 const SPAM_KEYWORDS = [
   "太好了", "非常棒", "超级好吃", "无敌美味", "绝绝子", "YYDS", 
@@ -36,6 +38,27 @@ export interface AIDetectionResult {
   confidence: number;
   reason?: string;
   credibility?: CommentCredibilityResult;
+}
+
+function logHuggingFaceFallback(message: string, error: unknown) {
+  if (axios.isAxiosError(error)) {
+    const responseData = error.response?.data;
+    const detail =
+      typeof responseData === "string"
+        ? responseData.replace(/\s+/g, " ").slice(0, 160)
+        : responseData && typeof responseData === "object"
+          ? JSON.stringify(responseData).slice(0, 160)
+          : undefined;
+
+    console.warn(message, {
+      code: error.code,
+      status: error.response?.status,
+      detail
+    });
+    return;
+  }
+
+  console.warn(message, error instanceof Error ? error.message : error);
 }
 
 const FOOD_KEYWORDS = [
@@ -114,7 +137,7 @@ export class AIDetector {
     try {
       const response = await axios.post(
         `${HUGGINGFACE_API_URL}/${COMMENT_TRUST_MODEL}`,
-        { inputs: text, options: { wait_for_model: true } },
+        { inputs: text, parameters: { top_k: 3 } },
         {
           headers: {
             Authorization: `Bearer ${HUGGINGFACE_API_KEY}`,
@@ -133,14 +156,14 @@ export class AIDetector {
         return {
           score,
           label: this.toCredibilityLabel(score),
-          reason: `Dianping RoBERTa分类置信度${Math.round(topPrediction.score * 100)}%，${fallbackReason}`,
+          reason: `${COMMENT_TRUST_MODEL}分类置信度${Math.round(topPrediction.score * 100)}%，${fallbackReason}`,
           model: COMMENT_TRUST_MODEL,
           modelLabel: topPrediction.label,
           modelConfidence: topPrediction.score
         };
       }
     } catch (error) {
-      console.warn("Comment credibility model failed, using fallback:", error);
+      logHuggingFaceFallback("Comment credibility model failed, using fallback", error);
     }
 
     return {
@@ -278,8 +301,8 @@ export class AIDetector {
 
     try {
       const response = await axios.post(
-        `${HUGGINGFACE_API_URL}/Xenova/bert-base-multilingual-uncased-sentiment`,
-        { inputs: text },
+        `${HUGGINGFACE_API_URL}/${SENTIMENT_MODEL}`,
+        { inputs: text, parameters: { top_k: 5 } },
         {
           headers: {
             Authorization: `Bearer ${HUGGINGFACE_API_KEY}`,
@@ -304,7 +327,7 @@ export class AIDetector {
         return { label, score: topPrediction.score };
       }
     } catch (error) {
-      console.warn("Hugging Face API failed, using fallback:", error);
+      logHuggingFaceFallback("Hugging Face API failed, using fallback", error);
     }
 
     return this.fallbackSentimentAnalysis(text);
@@ -397,7 +420,7 @@ export class AIDetector {
         }
       }
     } catch (error) {
-      console.warn("Image detection API failed, using fallback:", error);
+      logHuggingFaceFallback("Image detection API failed, using fallback", error);
     }
 
     return this.fallbackImageDetection();
