@@ -5,9 +5,26 @@
     <meta name="viewport" content="width=device-width, initial-scale=1.0" />
     <title>食证圈 Demo</title>
     <link rel="stylesheet" href="/src/styles.css" />
+    <!-- Leaflet CSS -->
+    <link rel="stylesheet" href="https://unpkg.com/leaflet@1.9.4/dist/leaflet.css" />
   </head>
   <body>
     <div id="app"></div>
+    <!-- Leaflet JS -->
+    <script src="https://unpkg.com/leaflet@1.9.4/dist/leaflet.js"></script>
+    <!-- 修复 Leaflet 默认图标在移动端加载失败显示绿色箭头的问题 -->
+    <script>
+      document.addEventListener('DOMContentLoaded', function() {
+        if (window.L && window.L.Icon && window.L.Icon.Default) {
+          delete window.L.Icon.Default.prototype._getIconUrl;
+          window.L.Icon.Default.mergeOptions({
+            iconRetinaUrl: '',
+            iconUrl: '',
+            shadowUrl: ''
+          });
+        }
+      });
+    </script>
     <script type="module" src="/src/main.tsx"></script>
   </body>
 </html>
