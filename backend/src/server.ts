@@ -4,7 +4,7 @@ import { dirname, extname, join, resolve } from "node:path";
 import { randomBytes, scryptSync, timingSafeEqual } from "node:crypto";
 import { fileURLToPath } from "node:url";
 import { PrismaClient } from "@prisma/client";
-import type { Prisma, User } from "@prisma/client";
+import type { Merchant, Prisma, User } from "@prisma/client";
 import { aiDetector } from "./ai-detector";
 
 const __dirname = dirname(fileURLToPath(import.meta.url));
@@ -14,6 +14,7 @@ const mobileDistDir = join(mobileDir, "dist");
 const staticRoot = existsSync(mobileDistDir) ? mobileDistDir : mobileDir;
 const port = Number(process.env.PORT || 3000);
 const prisma = new PrismaClient();
+const demoMerchantName = "老巷牛肉面";
 
 const defaultAvatar =
   "data:image/svg+xml;utf8," +
@@ -143,6 +144,34 @@ async function findMerchantMentionInText(text: string, db: DbClient = prisma) {
     const pattern = new RegExp(`[@＠]\\s*${escapeRegExp(merchant.businessName)}`);
     return pattern.test(text);
   }) ?? null;
+}
+
+function merchantNameVariants(name: string) {
+  return [name, `@${name}`, `＠${name}`];
+}
+
+async function linkExistingContentToMerchant(
+  merchant: Pick<Merchant, "id" | "businessName" | "businessAddress">,
+  db: DbClient = prisma
+) {
+  const names = merchantNameVariants(merchant.businessName);
+
+  await db.post.updateMany({
+    where: { merchantId: null, merchantName: { in: names } },
+    data: {
+      merchantId: merchant.id,
+      merchantName: merchant.businessName
+    }
+  });
+
+  await db.bounty.updateMany({
+    where: { merchantId: null, merchantName: { in: names } },
+    data: {
+      merchantId: merchant.id,
+      merchantName: merchant.businessName,
+      merchantAddress: merchant.businessAddress
+    }
+  });
 }
 
 function getToken(req: Request) {
@@ -320,14 +349,17 @@ async function verifyImage(imageDataUrl: string): Promise<string> {
   return result.result;
 }
 
-async function ensureDemoShowcase(user: User, merchantId?: string | null) {
+async function ensureDemoShowcase(
+  user: User,
+  demoMerchant?: Pick<Merchant, "id" | "businessName" | "businessAddress"> | null
+) {
   const demoPosts = [
     {
       id: "p_demo",
       title: "街角面馆的牛肉面",
       content: "汤底清亮，牛肉分量比菜单图更扎实。午饭高峰要排队，整体值得再来。",
       image: demoImage,
-      merchantName: "老巷牛肉面",
+      merchantName: demoMerchantName,
       tags: ["牛肉面", "午餐", "实拍"],
       postType: "recommend",
       likeCount: 18,
@@ -364,6 +396,8 @@ async function ensureDemoShowcase(user: User, merchantId?: string | null) {
   ];
 
   for (const item of demoPosts) {
+    const linkedMerchantId = demoMerchant?.businessName === item.merchantName ? demoMerchant.id : null;
+
     await prisma.post.upsert({
       where: { id: item.id },
       update: {
@@ -371,7 +405,7 @@ async function ensureDemoShowcase(user: User, merchantId?: string | null) {
         content: item.content,
         coverImageUrl: item.image,
         imageUrlsJson: JSON.stringify([item.image]),
-        merchantId: item.merchantName === "老巷牛肉面" ? merchantId ?? null : null,
+        merchantId: linkedMerchantId,
         merchantName: item.merchantName,
         tagsJson: JSON.stringify(item.tags),
         postType: item.postType,
@@ -386,7 +420,7 @@ async function ensureDemoShowcase(user: User, merchantId?: string | null) {
         content: item.content,
         coverImageUrl: item.image,
         imageUrlsJson: JSON.stringify([item.image]),
-        merchantId: item.merchantName === "老巷牛肉面" ? merchantId ?? null : null,
+        merchantId: linkedMerchantId,
         merchantName: item.merchantName,
         tagsJson: JSON.stringify(item.tags),
         postType: item.postType,
@@ -458,13 +492,18 @@ async function ensureDemoShowcase(user: User, merchantId?: string | null) {
     }
   });
 
+  const demoBountyMerchantId = demoMerchant?.businessName === demoMerchantName ? demoMerchant.id : null;
+  const demoBountyMerchantAddress = demoMerchant?.businessName === demoMerchantName
+    ? demoMerchant.businessAddress
+    : "北京市朝阳区某某街道123号";
+
   await prisma.bounty.upsert({
     where: { id: "b_demo" },
     update: {
       acceptorId: null,
-      merchantId: merchantId ?? null,
-      merchantName: "老巷牛肉面",
-      merchantAddress: "北京市朝阳区某某街道123号",
+      merchantId: demoBountyMerchantId,
+      merchantName: demoMerchantName,
+      merchantAddress: demoBountyMerchantAddress,
       description: "请验证店内招牌牛肉面实物图是否与菜单一致，需上传现场图片。",
       rewardCoins: 50,
       status: "active",
@@ -475,9 +514,9 @@ async function ensureDemoShowcase(user: User, merchantId?: string | null) {
     create: {
       id: "b_demo",
       publisherId: user.id,
-      merchantId: merchantId ?? null,
-      merchantName: "老巷牛肉面",
-      merchantAddress: "北京市朝阳区某某街道123号",
+      merchantId: demoBountyMerchantId,
+      merchantName: demoMerchantName,
+      merchantAddress: demoBountyMerchantAddress,
       description: "请验证店内招牌牛肉面实物图是否与菜单一致，需上传现场图片。",
       rewardCoins: 50,
       deadline: new Date(Date.now() + 7 * 24 * 60 * 60 * 1000)
@@ -489,29 +528,16 @@ async function linkExistingMerchantContent() {
   const merchants = await prisma.merchant.findMany({ orderBy: { createdAt: "asc" } });
 
   for (const merchant of merchants) {
-    const names = [merchant.businessName, `@${merchant.businessName}`, `＠${merchant.businessName}`];
-
-    await prisma.post.updateMany({
-      where: { merchantId: null, merchantName: { in: names } },
-      data: {
-        merchantId: merchant.id,
-        merchantName: merchant.businessName
-      }
-    });
-
-    await prisma.bounty.updateMany({
-      where: { merchantId: null, merchantName: { in: names } },
-      data: {
-        merchantId: merchant.id,
-        merchantName: merchant.businessName,
-        merchantAddress: merchant.businessAddress
-      }
-    });
+    await linkExistingContentToMerchant(merchant);
   }
 }
 
 async function ensureMerchantDemoExtras(merchantId?: string | null) {
-  if (!merchantId) return;
+  if (!merchantId) {
+    await prisma.merchantPhoto.deleteMany({ where: { id: "mp_demo" } });
+    await prisma.weeklyRanking.deleteMany({ where: { id: { startsWith: "wr_demo_" } } });
+    return;
+  }
 
   await prisma.merchantPhoto.upsert({
     where: { id: "mp_demo" },
@@ -557,9 +583,9 @@ async function ensureMerchantDemoExtras(merchantId?: string | null) {
 async function ensureSeedData() {
   const existingUser = await prisma.user.findFirst({ orderBy: { createdAt: "asc" } });
   if (existingUser) {
-    const merchant = await prisma.merchant.findFirst({ where: { userId: existingUser.id } });
-    await ensureDemoShowcase(existingUser, merchant?.id);
-    await ensureMerchantDemoExtras(merchant?.id);
+    const demoMerchant = await prisma.merchant.findFirst({ where: { businessName: demoMerchantName } });
+    await ensureDemoShowcase(existingUser, demoMerchant);
+    await ensureMerchantDemoExtras(demoMerchant?.id);
     await linkExistingMerchantContent();
     return;
   }
@@ -581,7 +607,7 @@ async function ensureSeedData() {
     data: {
       id: "m_demo",
       userId: user.id,
-      businessName: "老巷牛肉面",
+      businessName: demoMerchantName,
       businessAddress: "北京市朝阳区某某街道123号",
       latitude: 39.9042,
       longitude: 116.4074,
@@ -595,7 +621,7 @@ async function ensureSeedData() {
     data: { isMerchant: true, merchantStatus: "approved" }
   });
   
-  await ensureDemoShowcase(user, merchant.id);
+  await ensureDemoShowcase(user, merchant);
   await ensureMerchantDemoExtras(merchant.id);
   await linkExistingMerchantContent();
 }
@@ -789,7 +815,7 @@ api.post(
     const businessLicense = typeof req.body.businessLicense === "string" ? req.body.businessLicense : "";
     const licenseImageUrl = typeof req.body.licenseImageUrl === "string" ? req.body.licenseImageUrl : "";
     
-    await prisma.merchant.create({
+    const merchant = await prisma.merchant.create({
       data: {
         id: id("m"),
         userId: user.id,
@@ -800,6 +826,7 @@ api.post(
         status: "pending"
       }
     });
+    await linkExistingContentToMerchant(merchant);
     
     await prisma.user.update({
       where: { id: user.id },

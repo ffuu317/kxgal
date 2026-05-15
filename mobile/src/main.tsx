@@ -279,6 +279,39 @@ function formValues(form: HTMLFormElement) {
   return Object.fromEntries(new FormData(form).entries()) as Record<string, string>;
 }
 
+function normalizeMerchantName(value = "") {
+  return value.trim().replace(/^[@＠]\s*/, "").trim();
+}
+
+function extractMerchantMentions(text: string) {
+  const mentions = new Set<string>();
+  const mentionPattern = /[@＠]\s*([^\s@＠，。！？、,.!?;；:：]+)/g;
+  let match: RegExpExecArray | null;
+
+  while ((match = mentionPattern.exec(text)) !== null) {
+    const merchantName = normalizeMerchantName(match[1]);
+    if (merchantName) mentions.add(merchantName);
+  }
+
+  return mentions;
+}
+
+function textMentionsMerchant(text: string, merchantName: string) {
+  return extractMerchantMentions(text).has(merchantName);
+}
+
+function postMatchesMerchant(post: Post, merchant: Merchant) {
+  if (post.merchantId === merchant.id) return true;
+  if (normalizeMerchantName(post.merchantName) === merchant.businessName) return true;
+  return textMentionsMerchant(`${post.title || ""} ${post.content || ""}`, merchant.businessName);
+}
+
+function bountyMatchesMerchant(bounty: Bounty, merchant: Merchant) {
+  if (bounty.merchantId === merchant.id) return true;
+  if (normalizeMerchantName(bounty.merchantName) === merchant.businessName) return true;
+  return textMentionsMerchant(`${bounty.merchantName || ""} ${bounty.description || ""}`, merchant.businessName);
+}
+
 function readFileAsDataUrl(file: File) {
   return new Promise<string>((resolve, reject) => {
     const reader = new FileReader();
@@ -546,38 +579,8 @@ function App() {
     const found = merchants.find(m => m.id === merchantId);
     if (found) {
       setSelectedMerchant(found);
-      // 根据商家ID、商家名称以及标题/正文包含@商家名来匹配帖子
-      const matchedPosts = posts.filter(post => {
-        // 直接匹配merchantId
-        if (post.merchantId === merchantId) return true;
-        // 匹配商家名称
-        if (found.businessName && post.merchantName) {
-          if (post.merchantName.includes(found.businessName) || found.businessName.includes(post.merchantName)) {
-            return true;
-          }
-        }
-        // 检查标题和正文是否包含@商家名
-        const fullText = `${post.title || ""} ${post.content || ""}`;
-        if (found.businessName && fullText.includes(`@${found.businessName}`)) {
-          return true;
-        }
-        return false;
-      });
-      // 根据商家ID、商家名称匹配悬赏
-      const matchedBounties = bounties.filter(bounty => {
-        if (bounty.merchantId === merchantId) return true;
-        if (found.businessName && bounty.merchantName) {
-          if (bounty.merchantName.includes(found.businessName) || found.businessName.includes(bounty.merchantName)) {
-            return true;
-          }
-        }
-        // 检查商家名称和描述
-        const fullText = `${bounty.merchantName || ""} ${bounty.description || ""}`;
-        if (found.businessName && fullText.includes(`@${found.businessName}`)) {
-          return true;
-        }
-        return false;
-      });
+      const matchedPosts = posts.filter((post) => postMatchesMerchant(post, found));
+      const matchedBounties = bounties.filter((bounty) => bountyMatchesMerchant(bounty, found));
       setMerchantPosts(matchedPosts);
       setMerchantBounties(matchedBounties);
       setMerchantPhotos([]);
@@ -1619,20 +1622,12 @@ function App() {
 
   // 解析文本中的@商家
   function parseAtMerchants(text: string): { merchantId: string | null; merchantName: string | null } {
-    const atPattern = /@([^\s@]+)/g;
-    const matches = text.match(atPattern);
-    
-    if (matches) {
-      for (const match of matches) {
-        const merchantName = match.slice(1); // 去掉@符号
-        const foundMerchant = merchants.find(m => 
-          m.businessName === merchantName || 
-          m.businessName.includes(merchantName) || 
-          merchantName.includes(m.businessName)
-        );
-        if (foundMerchant) {
-          return { merchantId: foundMerchant.id, merchantName: foundMerchant.businessName };
-        }
+    const mentionedNames = extractMerchantMentions(text);
+
+    for (const merchantName of mentionedNames) {
+      const foundMerchant = merchants.find((merchant) => merchant.businessName === merchantName);
+      if (foundMerchant) {
+        return { merchantId: foundMerchant.id, merchantName: foundMerchant.businessName };
       }
     }
     
@@ -1892,8 +1887,37 @@ function App() {
       return;
     }
     try {
-      // mock模式：直接更新用户状态
+      const values = formValues(event.currentTarget);
+      const businessName = values.businessName?.trim();
+      const businessAddress = values.businessAddress?.trim();
+
+      if (!businessName || !businessAddress) {
+        flash("请填写商家名称和地址");
+        return;
+      }
+
+      const now = new Date().toISOString();
+      const nextMerchant: Merchant = {
+        id: `m_${Date.now()}`,
+        userId: user.id,
+        businessName,
+        businessAddress,
+        businessLicense: values.businessLicense?.trim() || null,
+        status: "pending",
+        createdAt: now,
+        updatedAt: now
+      };
+
       setUser(prev => prev ? { ...prev, isMerchant: true, merchantStatus: "pending" } : prev);
+      setMerchants((items) => {
+        const exists = items.some((item) => item.userId === user.id);
+        return exists
+          ? items.map((item) => (item.userId === user.id ? nextMerchant : item))
+          : [nextMerchant, ...items];
+      });
+      setMerchant(nextMerchant);
+      setMerchantPosts(posts.filter((post) => postMatchesMerchant(post, nextMerchant)));
+      setMerchantBounties(bounties.filter((bounty) => bountyMatchesMerchant(bounty, nextMerchant)));
       setView("merchant");
       flash("商家认证申请已提交，等待审核");
     } catch (error) {
