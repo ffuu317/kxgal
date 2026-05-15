@@ -19,6 +19,12 @@ type User = {
   updatedAt: string;
 };
 
+type AuthResponse = {
+  token: string;
+  user: User;
+  loginReward?: boolean;
+};
+
 type Post = {
   id: string;
   authorId: string;
@@ -245,6 +251,20 @@ type UserReward = {
 };
 
 const apiBase = "/api";
+const authTokenKey = "eattruth.token";
+const fingerprintHashKey = "eattruth.fingerprintHash";
+
+function getOrCreateFingerprintHash() {
+  const existing = localStorage.getItem(fingerprintHashKey);
+  if (existing) return existing;
+
+  const randomPart =
+    globalThis.crypto?.randomUUID?.() ??
+    `${Date.now()}_${Math.random().toString(36).slice(2)}`;
+  const fingerprintHash = `fingerprint_${randomPart.replace(/[^a-zA-Z0-9]/g, "")}`;
+  localStorage.setItem(fingerprintHashKey, fingerprintHash);
+  return fingerprintHash;
+}
 
 // 商家类型图标映射（全局可用）
 function getIconByType(type: string): string {
@@ -343,7 +363,7 @@ function bountyStatusLabel(status: string) {
 }
 
 function App() {
-  const [token, setToken] = useState(() => localStorage.getItem("eattruth.token") || "");
+  const [token, setToken] = useState(() => localStorage.getItem(authTokenKey) || "");
   const [user, setUser] = useState<User | null>(null);
   const [posts, setPosts] = useState<Post[]>([
     {
@@ -621,7 +641,9 @@ function App() {
       const data = await api<{ user: User }>("/users/me");
       setUser(data.user);
     } catch {
-      // Mock sessions can keep their local user shape.
+      localStorage.removeItem(authTokenKey);
+      setToken("");
+      setUser(null);
     }
   }
 
@@ -1509,7 +1531,7 @@ function App() {
 
   async function logout(showMessage = true) {
     if (token) api("/auth/logout", { method: "POST", body: "{}" }).catch(() => {});
-    localStorage.removeItem("eattruth.token");
+    localStorage.removeItem(authTokenKey);
     setToken("");
     setUser(null);
     setView("home");
@@ -1531,62 +1553,48 @@ function App() {
       return;
     }
     
-    // 登录直接处理（mock模式）
     try {
-      const formData2 = formData;
-      const mockUser: User = {
-        id: "user_" + Date.now(),
-        phone: formData2.phone as string,
-        nickname: "用户" + (formData2.phone as string).slice(-4),
-        avatarUrl: "",
-        bio: "",
-        status: "active",
-        level: "bronze",
-        creditCoin: 100,
-        isMerchant: false,
-        merchantStatus: "none",
-        idCardVerified: false,
-        warningCount: 0,
-        createdAt: new Date().toISOString(),
-        updatedAt: new Date().toISOString()
-      };
-      const mockToken = "mock_token_" + Date.now();
-      setToken(mockToken);
-      setUser(mockUser);
-      localStorage.setItem("eattruth.token", mockToken);
+      const data = await request<AuthResponse>("/auth/login", "", {
+        method: "POST",
+        body: JSON.stringify({
+          phone: formData.phone,
+          password: formData.password
+        })
+      });
+
+      setToken(data.token);
+      setUser(data.user);
+      localStorage.setItem(authTokenKey, data.token);
       setView("home");
-      flash("登录成功，获得5信用币");
+      flash(data.loginReward ? "登录成功，获得5信用币" : "登录成功");
     } catch (error) {
       flash((error as Error).message);
     }
   }
   
-  // 指纹验证完成后完成注册（mock模式）
-  function completeFingerprintRegister() {
+  // 指纹验证完成后完成注册
+  async function completeFingerprintRegister() {
     if (!pendingRegisterData) return;
-    const mockUser: User = {
-      id: "user_" + Date.now(),
-      phone: pendingRegisterData.phone,
-      nickname: pendingRegisterData.nickname,
-      avatarUrl: "",
-      bio: "",
-      status: "active",
-      level: "bronze",
-      creditCoin: 50,
-      isMerchant: false,
-      merchantStatus: "none",
-      idCardVerified: false,
-      warningCount: 0,
-      createdAt: new Date().toISOString(),
-      updatedAt: new Date().toISOString()
-    };
-    const mockToken = "mock_token_" + Date.now();
-    setToken(mockToken);
-    setUser(mockUser);
-    localStorage.setItem("eattruth.token", mockToken);
-    setPendingRegisterData(null);
-    setView("home");
-    flash("注册成功！指纹已绑定，账号已激活");
+
+    try {
+      const data = await request<AuthResponse>("/auth/register", "", {
+        method: "POST",
+        body: JSON.stringify({
+          ...pendingRegisterData,
+          fingerprintHash: getOrCreateFingerprintHash()
+        })
+      });
+
+      setToken(data.token);
+      setUser(data.user);
+      localStorage.setItem(authTokenKey, data.token);
+      setPendingRegisterData(null);
+      setView("home");
+      flash("注册成功！指纹已绑定，账号已激活");
+    } catch (error) {
+      setView("register");
+      flash((error as Error).message);
+    }
   }
 
   async function handleSearch(event: FormEvent<HTMLFormElement>) {
@@ -1999,25 +2007,23 @@ function App() {
 
   useEffect(() => {
     if (!token) return;
-    // mock模式：有token就保持登录状态，不请求真实API
-    if (!user) {
-      setUser({
-        id: "user_mock",
-        phone: "13800000000",
-        nickname: "用户0000",
-        avatarUrl: "",
-        bio: "",
-        status: "active",
-        level: "bronze",
-        creditCoin: 100,
-        isMerchant: false,
-        merchantStatus: "none",
-        idCardVerified: false,
-        warningCount: 0,
-        createdAt: new Date().toISOString(),
-        updatedAt: new Date().toISOString()
+    let cancelled = false;
+
+    request<{ user: User }>("/users/me", token)
+      .then((data) => {
+        if (!cancelled) setUser(data.user);
+      })
+      .catch(() => {
+        if (cancelled) return;
+        localStorage.removeItem(authTokenKey);
+        setToken("");
+        setUser(null);
+        flash("登录已过期，请重新登录");
       });
-    }
+
+    return () => {
+      cancelled = true;
+    };
   }, [token]);
 
   useEffect(() => {
