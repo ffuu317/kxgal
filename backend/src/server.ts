@@ -41,7 +41,8 @@ const demoBrunchImage = demoFoodImage("早午餐套餐", "#eef6f4", "#f4a261", "
 
 type ApiError = Error & { status?: number; code?: string };
 type PostWithAuthor = Awaited<ReturnType<typeof findPostWithAuthor>>;
-type CommentWithAuthor = Awaited<ReturnType<typeof findCommentsWithAuthor>>[number];
+type CommentWithAuthor = Prisma.CommentGetPayload<{ include: { author: true } }>;
+type CommentWithPost = Prisma.CommentGetPayload<{ include: { author: true; post: { include: { author: true } } } }>;
 type BountyWithUsers = Prisma.BountyGetPayload<{ include: { publisher: true; acceptor: true } }>;
 type DbClient = PrismaClient | Prisma.TransactionClient;
 
@@ -115,6 +116,34 @@ function routeParam(req: Request, field: string) {
   return value;
 }
 
+function normalizeMerchantMention(value: string) {
+  return value.trim().replace(/^[@＠]\s*/, "").trim();
+}
+
+function escapeRegExp(value: string) {
+  return value.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
+}
+
+async function findMentionedMerchant(rawName: string, db: DbClient = prisma) {
+  const merchantName = normalizeMerchantMention(rawName);
+  if (!merchantName) return null;
+
+  return db.merchant.findFirst({
+    where: { businessName: merchantName },
+    orderBy: { createdAt: "asc" }
+  });
+}
+
+async function findMerchantMentionInText(text: string, db: DbClient = prisma) {
+  if (!text.trim()) return null;
+
+  const merchants = await db.merchant.findMany({ orderBy: { createdAt: "asc" } });
+  return merchants.find((merchant) => {
+    const pattern = new RegExp(`[@＠]\\s*${escapeRegExp(merchant.businessName)}`);
+    return pattern.test(text);
+  }) ?? null;
+}
+
 function getToken(req: Request) {
   const auth = req.header("authorization") || "";
   return auth.startsWith("Bearer ") ? auth.slice(7) : "";
@@ -141,6 +170,7 @@ function serializePost(post: NonNullable<PostWithAuthor>, likedByMe = false) {
     content: post.content,
     coverImageUrl: post.coverImageUrl,
     imageUrls: parseJsonList(post.imageUrlsJson),
+    merchantId: post.merchantId,
     merchantName: post.merchantName,
     tags: parseJsonList(post.tagsJson),
     likeCount: post.likeCount,
@@ -154,7 +184,9 @@ function serializePost(post: NonNullable<PostWithAuthor>, likedByMe = false) {
   };
 }
 
-function serializeComment(comment: CommentWithAuthor) {
+function serializeComment(comment: CommentWithAuthor | CommentWithPost) {
+  const post = "post" in comment ? comment.post : null;
+
   return {
     id: comment.id,
     postId: comment.postId,
@@ -170,7 +202,8 @@ function serializeComment(comment: CommentWithAuthor) {
     receiptImageUrl: comment.receiptImageUrl,
     createdAt: comment.createdAt,
     updatedAt: comment.updatedAt,
-    author: publicUser(comment.author)
+    author: publicUser(comment.author),
+    ...(post ? { post: serializePost(post) } : {})
   };
 }
 
@@ -313,6 +346,7 @@ async function ensureDemoShowcase(user: User, merchantId?: string | null) {
         content: item.content,
         coverImageUrl: item.image,
         imageUrlsJson: JSON.stringify([item.image]),
+        merchantId: item.merchantName === "老巷牛肉面" ? merchantId ?? null : null,
         merchantName: item.merchantName,
         tagsJson: JSON.stringify(item.tags),
         likeCount: item.likeCount,
@@ -326,6 +360,7 @@ async function ensureDemoShowcase(user: User, merchantId?: string | null) {
         content: item.content,
         coverImageUrl: item.image,
         imageUrlsJson: JSON.stringify([item.image]),
+        merchantId: item.merchantName === "老巷牛肉面" ? merchantId ?? null : null,
         merchantName: item.merchantName,
         tagsJson: JSON.stringify(item.tags),
         likeCount: item.likeCount,
@@ -423,11 +458,37 @@ async function ensureDemoShowcase(user: User, merchantId?: string | null) {
   });
 }
 
+async function linkExistingMerchantContent() {
+  const merchants = await prisma.merchant.findMany({ orderBy: { createdAt: "asc" } });
+
+  for (const merchant of merchants) {
+    const names = [merchant.businessName, `@${merchant.businessName}`, `＠${merchant.businessName}`];
+
+    await prisma.post.updateMany({
+      where: { merchantId: null, merchantName: { in: names } },
+      data: {
+        merchantId: merchant.id,
+        merchantName: merchant.businessName
+      }
+    });
+
+    await prisma.bounty.updateMany({
+      where: { merchantId: null, merchantName: { in: names } },
+      data: {
+        merchantId: merchant.id,
+        merchantName: merchant.businessName,
+        merchantAddress: merchant.businessAddress
+      }
+    });
+  }
+}
+
 async function ensureSeedData() {
   const existingUser = await prisma.user.findFirst({ orderBy: { createdAt: "asc" } });
   if (existingUser) {
     const merchant = await prisma.merchant.findFirst({ where: { userId: existingUser.id } });
     await ensureDemoShowcase(existingUser, merchant?.id);
+    await linkExistingMerchantContent();
     return;
   }
   
@@ -460,6 +521,7 @@ async function ensureSeedData() {
   });
   
   await ensureDemoShowcase(user, merchant.id);
+  await linkExistingMerchantContent();
 }
 
 const app = express();
@@ -678,7 +740,29 @@ api.get(
   asyncRoute(async (req, res) => {
     const user = await requireUser(req);
     const merchant = await prisma.merchant.findUnique({ where: { userId: user.id } });
-    res.json({ merchant });
+    if (!merchant) {
+      res.json({ merchant: null, posts: [], bounties: [] });
+      return;
+    }
+
+    const [posts, bounties] = await Promise.all([
+      prisma.post.findMany({
+        where: { merchantId: merchant.id, status: "published" },
+        include: { author: true },
+        orderBy: { createdAt: "desc" }
+      }),
+      prisma.bounty.findMany({
+        where: { merchantId: merchant.id },
+        include: { publisher: true, acceptor: true },
+        orderBy: { createdAt: "desc" }
+      })
+    ]);
+
+    res.json({
+      merchant,
+      posts: posts.map((post) => serializePost(post)),
+      bounties: bounties.map(serializeBounty)
+    });
   })
 );
 
@@ -733,6 +817,10 @@ api.post(
     
     const tags = Array.isArray(req.body.tags) ? req.body.tags.map(String).map((tag: string) => tag.trim()).filter(Boolean) : [];
     const aiVerified = await verifyContent(content);
+    const rawMerchantName = typeof req.body.merchantName === "string" ? req.body.merchantName : "";
+    const mentionedMerchant =
+      await findMentionedMerchant(rawMerchantName) ?? await findMerchantMentionInText(`${title} ${content}`);
+    const merchantName = mentionedMerchant?.businessName ?? normalizeMerchantMention(rawMerchantName);
     
     const post = await prisma.post.create({
       data: {
@@ -742,7 +830,8 @@ api.post(
         content,
         coverImageUrl: imageUrls[0],
         imageUrlsJson: JSON.stringify(imageUrls),
-        merchantName: typeof req.body.merchantName === "string" ? req.body.merchantName.trim() : "",
+        merchantId: mentionedMerchant?.id ?? null,
+        merchantName,
         tagsJson: JSON.stringify(tags),
         aiVerified
       },
@@ -777,12 +866,19 @@ api.patch(
     if (!post) throw apiError(404, "资源不存在", "NOT_FOUND");
     if (post.authorId !== user.id) throw apiError(403, "只能编辑自己的帖子", "FORBIDDEN");
     
+    const rawMerchantName = typeof req.body.merchantName === "string" ? req.body.merchantName : undefined;
+    const mentionedMerchant =
+      rawMerchantName === undefined
+        ? await findMerchantMentionInText(`${typeof req.body.title === "string" ? req.body.title : post.title} ${typeof req.body.content === "string" ? req.body.content : post.content}`)
+        : await findMentionedMerchant(rawMerchantName) ?? await findMerchantMentionInText(`${typeof req.body.title === "string" ? req.body.title : post.title} ${typeof req.body.content === "string" ? req.body.content : post.content}`);
+
     const nextPost = await prisma.post.update({
       where: { id: post.id },
       data: {
         title: typeof req.body.title === "string" ? req.body.title.trim() : post.title,
         content: typeof req.body.content === "string" ? req.body.content.trim() : post.content,
-        merchantName: typeof req.body.merchantName === "string" ? req.body.merchantName.trim() : post.merchantName,
+        merchantId: rawMerchantName === undefined ? mentionedMerchant?.id ?? post.merchantId : mentionedMerchant?.id ?? null,
+        merchantName: rawMerchantName === undefined ? mentionedMerchant?.businessName ?? post.merchantName : mentionedMerchant?.businessName ?? normalizeMerchantMention(rawMerchantName),
         tagsJson: Array.isArray(req.body.tags) ? JSON.stringify(req.body.tags.map(String).filter(Boolean)) : post.tagsJson
       },
       include: { author: true }
@@ -962,8 +1058,12 @@ api.get(
   asyncRoute(async (req, res) => {
     const user = await requireUser(req);
     const comments = await prisma.comment.findMany({
-      where: { authorId: user.id, status: "published" },
-      include: { author: true },
+      where: {
+        authorId: user.id,
+        status: "published",
+        post: { status: "published" }
+      },
+      include: { author: true, post: { include: { author: true } } },
       orderBy: { createdAt: "desc" }
     });
     res.json({ comments: comments.map(serializeComment) });
@@ -1004,11 +1104,15 @@ api.post(
   asyncRoute(async (req, res) => {
     const user = await requireUser(req);
     
-    const merchantName = requireString(req.body, "merchantName");
-    const merchantAddress = requireString(req.body, "merchantAddress");
+    const rawMerchantName = requireString(req.body, "merchantName");
+    const rawMerchantAddress = requireString(req.body, "merchantAddress");
     const description = requireString(req.body, "description");
     const rewardCoins = typeof req.body.rewardCoins === "number" ? req.body.rewardCoins : 50;
     const deadlineDays = typeof req.body.deadlineDays === "number" ? req.body.deadlineDays : 7;
+    const mentionedMerchant =
+      await findMentionedMerchant(rawMerchantName) ?? await findMerchantMentionInText(description);
+    const merchantName = mentionedMerchant?.businessName ?? normalizeMerchantMention(rawMerchantName);
+    const merchantAddress = mentionedMerchant?.businessAddress ?? rawMerchantAddress;
     
     const deadline = new Date(Date.now() + deadlineDays * 24 * 60 * 60 * 1000);
     
@@ -1016,6 +1120,7 @@ api.post(
       data: {
         id: id("b"),
         publisherId: user.id,
+        merchantId: mentionedMerchant?.id ?? null,
         merchantName,
         merchantAddress,
         description,

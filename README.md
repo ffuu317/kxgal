@@ -4,13 +4,12 @@
 
 当前仓库已经包含一个 TS + React + Express + Prisma 可运行 demo。
 
-### 1. 加载项目内 nvm
+### 1. 使用 Node 22
 
-首次进入项目目录，先加载当前目录里的 nvm：
+项目要求 Node.js 22。首次进入项目目录，先安装并切换到 `.nvmrc` 指定的版本：
 
 ```bash
-export NVM_DIR="$PWD/.nvm"
-source "$NVM_DIR/nvm.sh"
+nvm install
 nvm use
 ```
 

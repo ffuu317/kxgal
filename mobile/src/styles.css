@@ -451,6 +451,56 @@ label,
   color: #8a9693;
 }
 
+.comment-history-list {
+  display: grid;
+  gap: 12px;
+}
+
+.comment-history-card {
+  display: grid;
+  gap: 8px;
+  padding: 14px;
+  border: 1px solid #e2e6e3;
+  border-radius: 8px;
+  background: #fff;
+  cursor: pointer;
+}
+
+.comment-history-card p {
+  color: #20302f;
+  font-size: 14px;
+}
+
+.comment-history-head {
+  display: flex;
+  align-items: flex-start;
+  justify-content: space-between;
+  gap: 12px;
+}
+
+.comment-history-head div {
+  display: grid;
+  gap: 3px;
+  min-width: 0;
+}
+
+.comment-history-head strong,
+.comment-history-head span {
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.comment-history-head span,
+.comment-history-head time {
+  color: #8a9693;
+  font-size: 12px;
+}
+
+.comment-history-head time {
+  flex: 0 0 auto;
+}
+
 .comment-form {
   display: grid;
   grid-template-columns: 1fr auto;
@@ -896,6 +946,24 @@ label,
 
 .merchant-status {
   margin-bottom: 16px;
+}
+
+.merchant-profile {
+  display: grid;
+  gap: 4px;
+  padding: 12px;
+  border: 1px solid #dfe8e5;
+  border-radius: 8px;
+  background: #f8faf9;
+}
+
+.merchant-profile strong {
+  color: #20302f;
+}
+
+.merchant-profile span {
+  color: #61706d;
+  font-size: 13px;
 }
 
 .status-badge {

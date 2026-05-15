@@ -45,6 +45,7 @@ model Post {
   content       String
   coverImageUrl String
   imageUrlsJson String     @default("[]")
+  merchantId    String?
   merchantName  String     @default("")
   tagsJson      String     @default("[]")
   likeCount     Int        @default(0)
@@ -54,10 +55,12 @@ model Post {
   createdAt     DateTime   @default(now())
   updatedAt     DateTime   @updatedAt
   author        User       @relation(fields: [authorId], references: [id], onDelete: Cascade)
+  merchant      Merchant?  @relation(fields: [merchantId], references: [id], onDelete: SetNull)
   comments      Comment[]
   likes         PostLike[]
 
   @@index([authorId])
+  @@index([merchantId])
   @@map("posts")
 }
 
@@ -148,6 +151,7 @@ model Merchant {
   createdAt       DateTime @default(now())
   updatedAt       DateTime @updatedAt
   user            User     @relation(fields: [userId], references: [id], onDelete: Cascade)
+  posts           Post[]
   bounties        Bounty[]
 
   @@map("merchants")

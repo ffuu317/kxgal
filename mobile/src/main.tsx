@@ -26,6 +26,7 @@ type Post = {
   content: string;
   coverImageUrl: string;
   imageUrls: string[];
+  merchantId: string | null;
   merchantName: string;
   tags: string[];
   likeCount: number;
@@ -54,6 +55,7 @@ type Comment = {
   createdAt: string;
   updatedAt: string;
   author?: User | null;
+  post?: Post | null;
 };
 
 type Transaction = {
@@ -87,6 +89,18 @@ type Bounty = {
   acceptor?: User | null;
 };
 
+type Merchant = {
+  id: string;
+  userId: string;
+  businessName: string;
+  businessAddress: string;
+  businessLicense: string | null;
+  licenseImageUrl: string | null;
+  status: string;
+  createdAt: string;
+  updatedAt: string;
+};
+
 type View = "home" | "detail" | "publish" | "mine" | "login" | "register" | "bounty" | "bounty-publish" | "bounty-detail" | "credit" | "merchant" | "merchant-apply";
 
 const apiBase = "/api";
@@ -97,7 +111,7 @@ async function request<T>(path: string, token: string, options: RequestInit = {}
     ...((options.headers || {}) as Record<string, string>)
   };
   if (token) headers.authorization = `Bearer ${token}`;
-  const response = await fetch(`${apiBase}${path}`, { ...options, headers });
+  const response = await fetch(`${apiBase}${path}`, { cache: "no-store", ...options, headers });
   const data = await response.json().catch(() => ({}));
   if (!response.ok) throw new Error(data.message || "请求失败");
   return data as T;
@@ -121,9 +135,13 @@ function App() {
   const [user, setUser] = useState<User | null>(null);
   const [posts, setPosts] = useState<Post[]>([]);
   const [comments, setComments] = useState<Comment[]>([]);
+  const [myComments, setMyComments] = useState<Comment[]>([]);
   const [transactions, setTransactions] = useState<Transaction[]>([]);
   const [bounties, setBounties] = useState<Bounty[]>([]);
   const [myBounties, setMyBounties] = useState<Bounty[]>([]);
+  const [merchant, setMerchant] = useState<Merchant | null>(null);
+  const [merchantPosts, setMerchantPosts] = useState<Post[]>([]);
+  const [merchantBounties, setMerchantBounties] = useState<Bounty[]>([]);
   const [view, setView] = useState<View>("home");
   const [selectedPost, setSelectedPost] = useState<Post | null>(null);
   const [selectedBounty, setSelectedBounty] = useState<Bounty | null>(null);
@@ -161,6 +179,26 @@ function App() {
       setMyBounties(data.bounties);
     } catch (error) {
       console.error("Failed to load my bounties:", error);
+    }
+  }
+
+  async function loadMyComments() {
+    try {
+      const data = await api<{ comments: Comment[] }>("/users/me/comments");
+      setMyComments(data.comments);
+    } catch (error) {
+      console.error("Failed to load my comments:", error);
+    }
+  }
+
+  async function loadMerchantCenter() {
+    try {
+      const data = await api<{ merchant: Merchant | null; posts: Post[]; bounties: Bounty[] }>("/users/me/merchant");
+      setMerchant(data.merchant);
+      setMerchantPosts(data.posts);
+      setMerchantBounties(data.bounties);
+    } catch (error) {
+      console.error("Failed to load merchant center:", error);
     }
   }
 
@@ -323,13 +361,21 @@ function App() {
         receiptImageUrl = await uploadImage(receiptDataUrl, "receipt");
       }
       
-      await api(`/posts/${selectedPost.id}/comments`, {
+      const data = await api<{ comment: Comment; cost: number }>(`/posts/${selectedPost.id}/comments`, {
         method: "POST",
         body: JSON.stringify({ content: values.content, receiptImageUrl })
       });
       setReceiptDataUrl("");
+      setPosts((items) =>
+        items.map((item) =>
+          item.id === selectedPost.id ? { ...item, commentCount: item.commentCount + 1 } : item
+        )
+      );
       await openPost(selectedPost.id);
+      setComments((items) => (items.some((comment) => comment.id === data.comment.id) ? items : [...items, data.comment]));
       await refreshMe();
+      await loadPosts().catch(() => {});
+      await loadMyComments();
       await loadTransactions().catch(() => {});
       flash("评论已发布");
     } catch (error) {
@@ -342,6 +388,8 @@ function App() {
     try {
       await api(`/comments/${id}`, { method: "DELETE", body: "{}" });
       await openPost(selectedPost.id);
+      await loadPosts().catch(() => {});
+      await loadMyComments();
       flash("评论已删除");
     } catch (error) {
       flash((error as Error).message);
@@ -488,6 +536,13 @@ function App() {
   useEffect(() => {
     if (view === "mine" && token) {
       loadMyBounties().catch(() => {});
+      loadMyComments().catch(() => {});
+    }
+  }, [view, token]);
+
+  useEffect(() => {
+    if (view === "merchant" && token) {
+      loadMerchantCenter().catch(() => {});
     }
   }, [view, token]);
 
@@ -533,6 +588,7 @@ function App() {
         <MineView
           user={user}
           posts={myPosts}
+          comments={myComments}
           myBounties={myBounties}
           transactions={recentTransactions}
           onGo={setView}
@@ -585,7 +641,12 @@ function App() {
       {view === "merchant" ? (
         <MerchantView
           user={user}
+          merchant={merchant}
+          posts={merchantPosts}
+          bounties={merchantBounties}
           onGo={setView}
+          onOpenPost={openPost}
+          onOpenBounty={openBounty}
           imageDataUrl={imageDataUrl}
           onPickImage={async (file) => setImageDataUrl(file ? await readFileAsDataUrl(file) : "")}
           onUploadKitchen={uploadKitchenImage}
@@ -886,6 +947,7 @@ function PublishView({
 function MineView({
   user,
   posts,
+  comments,
   myBounties,
   transactions,
   onGo,
@@ -897,6 +959,7 @@ function MineView({
 }: {
   user: User | null;
   posts: Post[];
+  comments: Comment[];
   myBounties: Bounty[];
   transactions: Transaction[];
   onGo: (view: View) => void;
@@ -1023,6 +1086,36 @@ function MineView({
             ))
           ) : (
             <Empty text="还没有悬赏任务" />
+          )}
+        </div>
+      </section>
+
+      <section>
+        <h2>我的评论</h2>
+        <div className="comment-history-list">
+          {comments.length ? (
+            comments.map((comment) => (
+              <article className="comment-history-card" key={comment.id} onClick={() => comment.post && onOpenPost(comment.post.id)}>
+                <div className="comment-history-head">
+                  <div>
+                    <strong>{comment.post?.merchantName || "未关联商家"}</strong>
+                    <span>{comment.post?.title || "原帖"}</span>
+                  </div>
+                  <time>{new Date(comment.createdAt).toLocaleDateString()}</time>
+                </div>
+                <p>{comment.content}</p>
+                <div className="comment-meta">
+                  <span className="ai-badge mini" data-status={comment.aiVerified}>
+                    {aiLabel(comment.aiVerified)}
+                  </span>
+                  <span className="credibility-badge" data-level={comment.credibilityLabel}>
+                    可信度 {comment.credibilityScore}% · {credibilityLabel(comment.credibilityLabel)}
+                  </span>
+                </div>
+              </article>
+            ))
+          ) : (
+            <Empty text="还没有评论记录" />
           )}
         </div>
       </section>
@@ -1338,13 +1431,23 @@ function TransactionRow({ tx }: { tx: Transaction }) {
 
 function MerchantView({
   user,
+  merchant,
+  posts,
+  bounties,
   onGo,
+  onOpenPost,
+  onOpenBounty,
   imageDataUrl,
   onPickImage,
   onUploadKitchen
 }: {
   user: User | null;
+  merchant: Merchant | null;
+  posts: Post[];
+  bounties: Bounty[];
   onGo: (view: View) => void;
+  onOpenPost: (id: string) => void;
+  onOpenBounty: (id: string) => void;
   imageDataUrl: string;
   onPickImage: (file: File | undefined) => void;
   onUploadKitchen: (event: FormEvent<HTMLFormElement>) => void;
@@ -1373,6 +1476,13 @@ function MerchantView({
             {user.merchantStatus === "approved" ? "已通过" : user.merchantStatus === "pending" ? "审核中" : "未通过"}
           </span>
         </div>
+
+        {merchant ? (
+          <div className="merchant-profile">
+            <strong>{merchant.businessName}</strong>
+            <span>{merchant.businessAddress}</span>
+          </div>
+        ) : null}
         
         <div className="merchant-section">
           <h2>每月后厨上传</h2>
@@ -1387,6 +1497,42 @@ function MerchantView({
             </button>
             <p className="hint">每月上传可获得50信用币奖励</p>
           </form>
+        </div>
+
+        <div className="merchant-section">
+          <h2>关联帖子</h2>
+          <div className="feed">
+            {posts.length ? posts.map((post) => <PostCard key={post.id} post={post} onOpenPost={onOpenPost} />) : <Empty text="还没有用户 @ 该商家的帖子" />}
+          </div>
+        </div>
+
+        <div className="merchant-section">
+          <h2>关联悬赏</h2>
+          <div className="bounty-list">
+            {bounties.length ? (
+              bounties.map((bounty) => (
+                <div className="bounty-card" key={bounty.id} onClick={() => onOpenBounty(bounty.id)}>
+                  <div className="bounty-header">
+                    <div className="bounty-merchant">
+                      <h3>{bounty.merchantName}</h3>
+                      <p>{bounty.merchantAddress}</p>
+                    </div>
+                    <div className="bounty-reward">
+                      <span className="reward-amount">{bounty.rewardCoins}</span>
+                      <span className="reward-label">信用币</span>
+                    </div>
+                  </div>
+                  <p className="bounty-desc">{bounty.description}</p>
+                  <div className="bounty-footer">
+                    <span className={`status-tag ${bounty.status}`}>{bountyStatusLabel(bounty.status)}</span>
+                    <span>{new Date(bounty.createdAt).toLocaleDateString()}</span>
+                  </div>
+                </div>
+              ))
+            ) : (
+              <Empty text="还没有用户 @ 该商家的悬赏" />
+            )}
+          </div>
         </div>
         
         <div className="merchant-section">
