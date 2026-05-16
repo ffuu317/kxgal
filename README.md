@@ -1,78 +1,83 @@
-# Eattruth 项目架构
+# Eattruth Demo
 
-## 快速启动
+这是一个可本地运行的餐饮真实评价 demo，包含 React + Vite 前端、Express 后端 API、Prisma 和本地 SQLite 数据库。所有命令默认在仓库根目录执行。
 
-当前仓库已经包含一个 TS + React + Express + Prisma 可运行 demo。
+## 依赖环境
 
-### 1. 使用 Node 22
+- Node.js `>=22.12.0`，建议直接使用仓库里的 `.nvmrc`。
+- npm `>=10.9.0`。
+- 本地 SQLite 数据库由 Prisma 使用文件 `backend/data/dev.db`，不需要单独安装数据库服务。
+- 可选：Hugging Face API token。未配置时，评论可信度检测会自动使用本地规则兜底。
 
-项目要求 Node.js 22。首次进入项目目录，先安装并切换到 `.nvmrc` 指定的版本：
+主要 npm 依赖：
+
+- 前端：`react`、`react-dom`、`vite`、`@vitejs/plugin-react`、`typescript`
+- 后端：`express`、`@prisma/client`、`axios`
+- 开发工具：`prisma`、`tsx`、`@types/node`、`@types/express`
+
+## 安装依赖
+
+如果使用 nvm：
 
 ```bash
 nvm install
 nvm use
 ```
 
-### 2. 初始化数据库
+首次拉取项目后安装 npm 依赖：
 
-首次启动前创建本地 SQLite 数据库，并生成 Prisma Client：
+```bash
+npm ci
+```
+
+如果需要在已有依赖基础上增量安装，也可以使用：
+
+```bash
+npm install
+```
+
+## 初始化数据库
+
+首次运行前同步 Prisma schema，并生成 Prisma Client：
 
 ```bash
 npm run db:push
 ```
 
-### 3. 启动开发环境
-
-开发模式会同时启动 Express 后端 API 和 Vite 前端：
-
-```bash
-npm run dev
-```
-
-启动后访问前端：
+数据库文件会创建在：
 
 ```text
-http://127.0.0.1:5173
+backend/data/dev.db
 ```
 
-局域网内其他设备访问时，将地址中的 `127.0.0.1` 换成这台电脑的局域网 IP，例如：
-
-```text
-http://192.168.1.23:5173
-```
-
-也可以直接使用启动日志里 Vite 打印的 `Network` 地址。
-
-macOS 可以用下面的命令查看当前 Wi-Fi 局域网 IP：
-
-```bash
-ipconfig getifaddr en0
-```
-
-后端 API 地址：
-
-```text
-http://localhost:3000
-```
-
-## AI 评论可信度
-
-发表评论时，后端会优先调用 Hugging Face 上的 `twn39/chinese-roberta-wwm-ext-finetune-dianping` 模型评估评论可信度，并把分数展示在评论下方。配置环境变量后即可启用远程模型：
-
-```bash
-export HUGGINGFACE_API_KEY="你的 Hugging Face token"
-```
-
-未配置 token 或模型暂不可用时，系统会自动使用本地规则兜底，评论仍可发布并展示可信度。
-
-默认体验账号：
+后端首次启动时，如果用户表为空，会自动写入 demo 数据和默认体验账号：
 
 ```text
 手机号：13800000000
 密码：123456
 ```
 
-## 常用命令
+## 启动开发环境
+
+同时启动后端 API 和 Vite 前端：
+
+```bash
+npm run dev
+```
+
+启动后访问：
+
+```text
+前端：http://127.0.0.1:5173
+后端：http://localhost:3000
+健康检查：http://localhost:3000/api/health
+```
+
+Vite 已经配置 `/api` 代理到 `http://127.0.0.1:3000`，前端开发时直接请求 `/api/...` 即可。
+
+局域网内其他设备访问时，把 `127.0.0.1` 替换为当前机器的局域网 IP，也可以直接使用启动日志里 Vite 打印的 `Network` 地址。
+
+## 单独启动
 
 只启动后端 API：
 
@@ -80,17 +85,13 @@ export HUGGINGFACE_API_KEY="你的 Hugging Face token"
 npm run dev:api
 ```
 
-只启动 Vite 前端：
+只启动前端：
 
 ```bash
 npm run dev:web
 ```
 
-类型检查：
-
-```bash
-npm run typecheck
-```
+## 构建和生产运行
 
 构建前端静态资源：
 
@@ -98,56 +99,64 @@ npm run typecheck
 npm run build
 ```
 
-构建后只启动后端，托管 `mobile/dist`：
+构建后启动后端：
 
 ```bash
 npm start
 ```
 
-## 数据库
-
-后端使用 Prisma，schema 在 `prisma/schema.prisma`，本地 SQLite 数据库在 `backend/data/dev.db`。首次启动时如果用户表为空，会自动创建默认体验账号和一条种子帖子。
-
-修改 Prisma schema 后，重新同步数据库：
+后端会托管 `mobile/dist` 下的前端静态资源，并继续提供 `/api` 接口。默认端口是 `3000`，可以通过 `PORT` 修改：
 
 ```bash
-npm run db:push
+PORT=4000 npm start
 ```
 
-只重新生成 Prisma Client：
+## 可选环境变量
 
 ```bash
-npm run db:generate
+export HUGGINGFACE_API_KEY="你的 Hugging Face token"
 ```
 
-Demo 覆盖第一版核心闭环：注册、登录、首页浏览、搜索、帖子详情、图片上传、发帖、点赞、评论、删除自己的评论、查看和编辑个人资料、退出登录。后端接口挂在 `/api` 下，数据保存在本地 SQLite 数据库中。
+可用环境变量：
+
+- `PORT`：后端监听端口，默认 `3000`。
+- `HUGGINGFACE_API_KEY`：启用 Hugging Face 远程模型。
+- `HUGGINGFACE_API_URL`：Hugging Face 推理地址，默认 `https://router.huggingface.co/hf-inference/models`。
+- `SENTIMENT_MODEL`：文本检测模型，默认 `nlptown/bert-base-multilingual-uncased-sentiment`。
+- `COMMENT_TRUST_MODEL`：评论可信度模型，默认复用 `SENTIMENT_MODEL`。
+
+## 常用命令
 
 ```bash
-eattruth
-├── backend/                 # Node.js 后端
-│   ├── src/
-│   │   ├── config/          # 环境变量、数据库配置
-│   │   ├── controllers/     # 业务控制器
-│   │   ├── services/        # 核心业务逻辑（信用币、等级、悬赏）
-│   │   ├── models/          # Prisma/TypeORM 实体
-│   │   ├── middleware/      # 指纹认证、权限、限流
-│   │   ├── routes/          # API 路由
-│   │   ├── utils/           # 工具函数（AI调用、JWT、指纹hash）
-│   │   └── app.ts
-│   ├── prisma/              # 数据库 schema
-│   └── package.json
-├── mobile/                  # React Native 客户端
-│   ├── src/
-│   │   ├── screens/         # 登录、主页、我的、悬赏、商家圈
-│   │   ├── components/      # 帖子卡片、评论区、等级条
-│   │   ├── services/        # API 请求封装
-│   │   └── hooks/           # 指纹认证、信用币变化
-│   └── App.tsx
-├── ai-service/              # Python AI 微服务 (FastAPI)
-│   ├── app/
-│   │   ├── fingerprint/     # 指纹去重算法
-│   │   ├── image_check/     # 图片真伪检测
-│   │   ├── spam_detection/  # 水军评论检测
-│   │   └── main.py
-│   └── requirements.txt
-└── docker-compose.yml       # 一键启动全部服务
+npm run dev          # 同时启动前端和后端
+npm run dev:api      # 只启动后端 API
+npm run dev:web      # 只启动 Vite 前端
+npm run db:push      # 同步数据库 schema
+npm run db:generate  # 重新生成 Prisma Client
+npm run typecheck    # TypeScript 类型检查
+npm run build        # 构建前端
+npm start            # 启动后端并托管已构建的前端
+```
+
+## 项目结构
+
+```text
+.
+├── backend/
+│   └── src/
+│       ├── server.ts       # Express API、静态资源托管、种子数据
+│       └── ai-detector.ts  # 评论/内容可信度检测
+├── mobile/
+│   ├── index.html
+│   ├── public/             # 静态图片资源
+│   └── src/                # React 前端代码
+├── prisma/
+│   └── schema.prisma       # Prisma schema，SQLite 数据库配置
+├── scripts/
+│   └── dev.js              # 同时拉起前后端开发服务
+├── package.json            # 根项目依赖和 npm scripts
+├── tsconfig.json
+└── vite.config.ts
+```
+
+当前 demo 覆盖注册、登录、首页浏览、搜索、帖子详情、图片上传、发帖、点赞、评论、删除自己的评论、个人资料编辑、商家相关页面和评论可信度展示等核心流程。
